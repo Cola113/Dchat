@@ -1,21 +1,21 @@
-import type { Metadata } from 'next';
-import './globals.css';
-import { Noto_Sans_SC } from 'next/font/google';
-
-const noto = Noto_Sans_SC({
-  subsets: ['latin'],
-  weight: ['400', '500', '700'],
-});
+import type { Metadata } from "next";
+import "./globals.css";
 
 export const metadata: Metadata = {
-  title: '可乐的小站',
-  description: 'AI 生图 / 改图',
+  title: "Dchat - 聊天应用",
+  description: "一个现代化的聊天应用",
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
   return (
     <html lang="zh-CN">
-      <body className={noto.className}>{children}</body>
+      <body>
+        {children}
+      </body>
     </html>
   );
 }
