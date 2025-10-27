@@ -1,6 +1,3 @@
-好的，这是完整的优化后的 `page.tsx` 代码：
-
-```tsx
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
@@ -44,7 +41,7 @@ function Snowflakes() {
       {Array.from({ length: 300 }).map((_, i) => {
         const symbol = snowflakeSymbols[i % snowflakeSymbols.length];
         const randomOpacity = (0.2 + Math.random() * 0.7).toFixed(2);
-      
+        
         return (
           <div 
             key={i} 
@@ -93,27 +90,27 @@ export default function Home() {
 
       for (let i = 0; i < items.length; i++) {
         const item = items[i];
-      
+        
         if (item.type.indexOf('image') !== -1) {
           e.preventDefault();
-        
+          
           const file = item.getAsFile();
           if (!file) continue;
 
           const reader = new FileReader();
           reader.onload = () => {
             const result = reader.result as string;
-          
+            
             setUploadedFiles(prev => [...prev, {
               name: `截图-${new Date().toLocaleTimeString('zh-CN')}.png`,
               type: file.type,
               data: result
             }]);
-          
+            
             setPasteHint('✅ 图片已粘贴！');
             setTimeout(() => setPasteHint(null), 2000);
           };
-        
+          
           reader.readAsDataURL(file);
         }
       }
@@ -125,7 +122,7 @@ export default function Home() {
 
   const fetchInitialOptions = async () => {
     setIsLoadingOptions(true);
-  
+    
     try {
       setMessages(prev => prev.map(msg => 
         msg.id === initialMessageId 
@@ -166,7 +163,7 @@ export default function Home() {
         for (const line of lines) {
           if (line.startsWith('data: ')) {
             const data = line.slice(6).trim();
-          
+            
             if (data === '[DONE]') {
               break;
             }
@@ -174,7 +171,7 @@ export default function Home() {
             try {
               const parsed = JSON.parse(data);
               const content = parsed.choices?.[0]?.delta?.content || '';
-            
+              
               if (content) {
                 fullContent += content;
               }
@@ -186,7 +183,7 @@ export default function Home() {
       }
 
       const { cleanContent, options } = extractOptions(fullContent);
-    
+      
       if (cleanContent) {
         setMessages(prev => prev.map(msg => 
           msg.id === initialMessageId 
@@ -194,7 +191,7 @@ export default function Home() {
             : msg
         ));
       }
-    
+      
       if (options.length === 3) {
         setSuggestedOptions(options);
         setOptionMessageId(initialMessageId);
@@ -228,7 +225,7 @@ export default function Home() {
       ['👨‍🚀聊聊太空', '🎵音乐推荐', '🏥健康小贴士'],
       ['🎁推荐礼品', '⛰️旅行建议', '🏫语言学习技巧']
     ];
-  
+    
     return optionGroups[Math.floor(Math.random() * optionGroups.length)];
   };
 
@@ -236,7 +233,7 @@ export default function Home() {
     const timer = setTimeout(() => {
       fetchInitialOptions();
     }, 1000);
-  
+    
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -260,10 +257,10 @@ export default function Home() {
       '🐧', '🦭', '🐻‍❄️',
       '💫', '🌠', '💎', '🪄'
     ];
-  
+    
     const randomEmoji = winterEmojiList[Math.floor(Math.random() * winterEmojiList.length)];
     const randomAnim = Math.floor(Math.random() * 5) + 1;
-  
+    
     const newEmoji: WinterEmoji = {
       id: uid(),
       x: e.clientX,
@@ -300,17 +297,17 @@ export default function Home() {
       const filePromises = imageFiles.map(async (file) => {
         return new Promise<UploadedFile>((resolve, reject) => {
           const reader = new FileReader();
-        
+          
           reader.onload = () => {
             const result = reader.result as string;
-          
+            
             resolve({
               name: file.name,
               type: file.type,
               data: result
             });
           };
-        
+          
           reader.onerror = () => reject(new Error('文件读取失败'));
           reader.readAsDataURL(file);
         });
@@ -343,7 +340,7 @@ export default function Home() {
   const extractOptions = (content: string): { cleanContent: string; options: string[] } => {
     const optionRegex = /<<<选项>>>([\s\S]*?)(?:\n\n|<<<|$)/;
     const match = content.match(optionRegex);
-  
+    
     if (match) {
       const optionsText = match[1];
       const options = optionsText
@@ -351,18 +348,18 @@ export default function Home() {
         .map(line => line.replace(/^[-•▪︎]\s*/, '').trim())
         .filter(line => line.length > 0 && line.length < 100)
         .slice(0, 3);
-    
+      
       const cleanContent = content.replace(optionRegex, '').trim();
-    
+      
       return { cleanContent, options: options.length === 3 ? options : [] };
     }
-  
+    
     return { cleanContent: content, options: [] };
   };
 
   const handleSend = async (messageText?: string) => {
     const textToSend = messageText || inputValue.trim();
-  
+    
     if (!textToSend && uploadedFiles.length === 0) return;
 
     if (isGenerating) {
@@ -427,7 +424,7 @@ export default function Home() {
               content: textPart?.text || '[图片消息]'
             };
           }
-        
+          
           return {
             role: msg.role === 'ai' ? 'assistant' : 'user',
             content: typeof msg.content === 'string' ? msg.content : '[未知消息]'
@@ -477,7 +474,7 @@ export default function Home() {
           for (const line of lines) {
             if (line.startsWith('data: ')) {
               const data = line.slice(6).trim();
-            
+              
               if (data === '[DONE]') {
                 break;
               }
@@ -485,7 +482,7 @@ export default function Home() {
               try {
                 const parsed = JSON.parse(data);
                 const content = parsed.choices?.[0]?.delta?.content || '';
-              
+                
                 if (content) {
                   if (!hasStarted) {
                     if (hasFiles) {
@@ -507,9 +504,9 @@ export default function Home() {
                     }
                     hasStarted = true;
                   }
-                
+                  
                   fullContent += content;
-                
+                  
                   setMessages(prev => 
                     prev.map(msg => 
                       msg.id === aiMessageId 
@@ -536,7 +533,7 @@ export default function Home() {
           break;
         } else {
           const { cleanContent, options } = extractOptions(fullContent);
-        
+          
           if (options.length === 3) {
             hasValidOptions = true;
             setMessages(prev => 
@@ -551,7 +548,7 @@ export default function Home() {
           } else {
             retryCount++;
             console.log(`选项提取失败，重试第 ${retryCount} 次...`);
-          
+            
             if (retryCount < maxRetries) {
               setMessages(prev => 
                 prev.map(msg => 
@@ -560,7 +557,7 @@ export default function Home() {
                     : msg
                 )
               );
-            
+              
               await new Promise(resolve => setTimeout(resolve, 500));
             } else {
               console.log('达到最大重试次数，使用备用选项');
@@ -585,7 +582,7 @@ export default function Home() {
           break;
         } else {
           console.error('请求错误:', error);
-        
+          
           retryCount++;
           if (retryCount < maxRetries) {
             console.log(`请求失败，重试第 ${retryCount} 次...`);
@@ -628,7 +625,7 @@ export default function Home() {
 
   const renderTextWithBold = (text: string) => {
     const parts = text.split(/(\*\*.*?\*\*)/g);
-  
+    
     return parts.map((part, index) => {
       if (part.startsWith('**') && part.endsWith('**')) {
         const boldText = part.slice(2, -2);
@@ -641,9 +638,9 @@ export default function Home() {
   const renderMessageContent = (content: string | Array<{type: string; text?: string; image_url?: {url: string}}>, messageId?: string) => {
     if (typeof content === 'string') {
       const shouldShowOptions = messageId === optionMessageId && suggestedOptions.length === 3;
-    
+      
       const hasComplexMarkdown = content.includes('```') || content.includes('#') || content.includes('- ') || content.includes('* ');
-    
+      
       return (
         <div>
           {hasComplexMarkdown ? (
@@ -685,7 +682,7 @@ export default function Home() {
         </div>
       );
     }
-  
+    
     return (
       <div>
         {content.map((item, index) => {
@@ -789,7 +786,7 @@ export default function Home() {
               </div>
             </div>
           ))}
-        
+          
           {isGenerating && (
             <div className="message ai">
               <div className="avatar">
@@ -810,7 +807,7 @@ export default function Home() {
               </div>
             </div>
           )}
-        
+          
           {isLoadingOptions && messages.length === 1 && (
             <div className="message ai">
               <div className="avatar">
@@ -831,7 +828,7 @@ export default function Home() {
               </div>
             </div>
           )}
-        
+          
           <div ref={messagesEndRef} />
         </div>
 
@@ -844,7 +841,7 @@ export default function Home() {
             onChange={handleFileUpload}
             style={{ display: 'none' }}
           />
-        
+          
           <button 
             className="upload-button"
             onClick={() => fileInputRef.current?.click()}
@@ -874,7 +871,7 @@ export default function Home() {
                 ))}
               </div>
             )}
-          
+            
             <textarea
               className="input-box resize-none"
               placeholder="输入消息或 Ctrl+V 粘贴图片...🎄"
@@ -898,3 +895,4 @@ export default function Home() {
     </main>
   );
 }
+
