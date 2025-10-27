@@ -14,8 +14,10 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="zh-CN">
-      <body className={noto.className}>{children}</body>
+    <html lang="zh-CN" className="light">
+      <body className={noto.className} style={{ colorScheme: 'light' }}>
+        {children}
+      </body>
     </html>
   );
 }

@@ -17,6 +17,13 @@ type Message = {
 
 type WinterEmoji = { id: string; x: number; y: number; emoji: string; anim: number };
 
+type UploadedFile = {
+  name: string;
+  type: string;
+  data: string;
+  isImage: boolean;
+};
+
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 
 function Snowflakes() {
@@ -54,23 +61,150 @@ function Snowflakes() {
 }
 
 export default function Home() {
+  const initialMessageId = useRef(uid()).current;
+  
+  // 👇 新增一个 state，用于记录当前应该显示选项的消息ID
+  const [optionMessageId, setOptionMessageId] = useState<string | null>(null);
+
   const [messages, setMessages] = useState<Message[]>([
     {
-      id: uid(),
+      id: initialMessageId,
       role: 'ai',
-      content: '你好!我是可乐的AI助手~ 🎄\n\n在这个圣诞季节,有什么可以帮助你的吗?',
+      content: '你好!我是可乐的AI助手~ 🎄',
       timestamp: Date.now()
     }
   ]);
   const [inputValue, setInputValue] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
-  const [isUploading, setIsUploading] = useState(false);
   const [winterEmojis, setWinterEmojis] = useState<WinterEmoji[]>([]);
-  const [uploadedFiles, setUploadedFiles] = useState<Array<{name: string; url: string}>>([]);
+  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
+  const [suggestedOptions, setSuggestedOptions] = useState<string[]>([]);
+  const [isLoadingOptions, setIsLoadingOptions] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const fetchInitialOptions = async () => {
+    setIsLoadingOptions(true);
+    
+    try {
+      // 显示加载状态
+      setMessages(prev => prev.map(msg => 
+        msg.id === initialMessageId 
+          ? { ...msg, content: '正在准备超级有趣的欢迎语和话题...' } 
+          : msg
+      ));
+
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          messages: [{
+            role: 'user',
+            content: '初次访问，请生成3个跨度极大的话题选项'
+          }],
+          isFirstLoad: true
+        }),
+      });
+
+      if (!response.ok) throw new Error('获取选项失败');
+
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+
+      if (!reader) throw new Error('无法读取响应');
+
+      let fullContent = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value);
+        const lines = chunk.split('\n');
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6).trim();
+            
+            if (data === '[DONE]') {
+              break;
+            }
+
+            try {
+              const parsed = JSON.parse(data);
+              const content = parsed.choices?.[0]?.delta?.content || '';
+              
+              if (content) {
+                fullContent += content;
+              }
+            } catch {
+              // 跳过无法解析的行
+            }
+          }
+        }
+      }
+
+      // 新增：分离欢迎语和选项
+      const { cleanContent, options } = extractOptions(fullContent);
+      
+      // 更新初始欢迎消息
+      if (cleanContent) {
+        setMessages(prev => prev.map(msg => 
+          msg.id === initialMessageId 
+            ? { ...msg, content: cleanContent } 
+            : msg
+        ));
+      }
+      
+      if (options.length === 3) {
+        setSuggestedOptions(options);
+        setOptionMessageId(initialMessageId); // 👈 设置初始消息ID
+      } else {
+        const backupOptions = generateRandomFallbackOptions();
+        setSuggestedOptions(backupOptions);
+        setOptionMessageId(initialMessageId); // 👈 即使是fallback，也设置初始消息ID
+      }
+
+    } catch (error) {
+      console.error('获取初始选项失败:', error);
+      // 显示错误信息
+      setMessages(prev => prev.map(msg => 
+        msg.id === initialMessageId 
+          ? { ...msg, content: '抱歉，欢迎语加载失败了 😢 但你可以随便聊聊哦！' } 
+          : msg
+      ));
+      const backupOptions = generateRandomFallbackOptions();
+      setSuggestedOptions(backupOptions);
+      setOptionMessageId(initialMessageId); // 👈 失败时也要设置，否则UI可能不刷新
+    } finally {
+      setIsLoadingOptions(false);
+    }
+  };
+
+  const generateRandomFallbackOptions = () => {
+    const optionGroups = [
+      ['😄讲个冷笑话', '🎄分享圣诞故事', '🥘推荐美食食谱'],
+      ['🤖聊聊AI技术', '❓解个谜语吧', '✍️创作首小诗'],
+      ['🎬推荐圣诞电影', '💻聊聊编程', '🚪分享生活小窍门'],
+      ['🎮玩文字游戏', '❕科普小知识', '📚生成随机故事'],
+      ['👨‍🚀聊聊太空', '🎵音乐推荐', '🏥健康小贴士'],
+      ['🎁推荐礼品', '⛰️旅行建议', '🏫语言学习技巧']
+    ];
+    
+    return optionGroups[Math.floor(Math.random() * optionGroups.length)];
+  };
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      fetchInitialOptions();
+    }, 1000);
+    
+    return () => clearTimeout(timer);
+  }, []);
 
   const scrollToBottom = () => {
     if (chatMessagesRef.current) {
@@ -80,67 +214,68 @@ export default function Home() {
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages]);
+  }, [messages, suggestedOptions]);
 
-const handleEmojiClick = (e: React.MouseEvent) => {  // 🔥 必须接收参数
-  const winterEmojiList = [
-    '❄️', '⛄', '☃️', '🌨️', '🏔️', '🧊', '❄',
-    '🎄', '🎅', '🤶', '🎁', '🎀', '🔔', '🕯️', '⭐', '🌟', '✨', '🦌', '🛷', '🧦', '🎊', '🎉',
-    '🍪', '🥛', '☕', '🍵', '🫖', '🍫', '🥧', '🧁',
-    '🧤', '🧣', '🎩', '👢',
-    '🐧', '🦭', '🐻‍❄️',
-    '💫', '🌠', '💎', '🪄'
-  ];
-  
-  const randomEmoji = winterEmojiList[Math.floor(Math.random() * winterEmojiList.length)];
-  const randomAnim = Math.floor(Math.random() * 5) + 1;
-  
-  const newEmoji: WinterEmoji = {
-    id: uid(),
-    x: e.clientX,      // 🔥 现在可以正确使用
-    y: e.clientY,      // 🔥 现在可以正确使用
-    emoji: randomEmoji,
-    anim: randomAnim,
+  const handleEmojiClick = (e: React.MouseEvent) => {
+    const winterEmojiList = [
+      '❄️', '⛄', '☃️', '🌨️', '🏔️', '🧊', '❄',
+      '🎄', '🎅', '🤶', '🎁', '🎀', '🔔', '🕯️', '⭐', '🌟', '✨', '🦌', '🛷', '🧦', '🎊', '🎉',
+      '🍪', '🥛', '☕', '🍵', '🫖', '🍫', '🥧', '🧁',
+      '🧤', '🧣', '🎩', '👢',
+      '🐧', '🦭', '🐻‍❄️',
+      '💫', '🌠', '💎', '🪄'
+    ];
+    
+    const randomEmoji = winterEmojiList[Math.floor(Math.random() * winterEmojiList.length)];
+    const randomAnim = Math.floor(Math.random() * 5) + 1;
+    
+    const newEmoji: WinterEmoji = {
+      id: uid(),
+      x: e.clientX,
+      y: e.clientY,
+      emoji: randomEmoji,
+      anim: randomAnim,
+    };
+
+    setWinterEmojis((prev) => [...prev, newEmoji]);
+
+    setTimeout(() => {
+      setWinterEmojis((prev) => prev.filter((item) => item.id !== newEmoji.id));
+    }, 2500);
   };
-
-  setWinterEmojis((prev) => [...prev, newEmoji]);
-
-  setTimeout(() => {
-    setWinterEmojis((prev) => prev.filter((item) => item.id !== newEmoji.id));
-  }, 2500);
-};
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
-    setIsUploading(true);
-
     try {
-      const uploadPromises = Array.from(files).map(async (file) => {
-        const formData = new FormData();
-        formData.append('file', file);
-
-        const response = await fetch('/api/upload', {
-          method: 'POST',
-          body: formData,
+      const filePromises = Array.from(files).map(async (file) => {
+        return new Promise<UploadedFile>((resolve, reject) => {
+          const reader = new FileReader();
+          
+          reader.onload = () => {
+            const result = reader.result as string;
+            const isImage = file.type.startsWith('image/');
+            
+            resolve({
+              name: file.name,
+              type: file.type,
+              data: result,
+              isImage
+            });
+          };
+          
+          reader.onerror = () => reject(new Error('文件读取失败'));
+          reader.readAsDataURL(file);
         });
-
-        if (!response.ok) {
-          throw new Error('上传失败');
-        }
-
-        const data = await response.json();
-        return { name: file.name, url: data.url };
       });
 
-      const uploaded = await Promise.all(uploadPromises);
+      const uploaded = await Promise.all(filePromises);
       setUploadedFiles(prev => [...prev, ...uploaded]);
-    } catch {
-      console.error('上传错误');
-      alert('上传失败，请重试');
+    } catch (error) {
+      console.error('文件读取错误:', error);
+      alert('文件读取失败，请重试');
     } finally {
-      setIsUploading(false);
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
@@ -159,26 +294,58 @@ const handleEmojiClick = (e: React.MouseEvent) => {  // 🔥 必须接收参数
     }
   };
 
-  const handleSend = async () => {
-    if (!inputValue.trim() && uploadedFiles.length === 0) return;
+  const extractOptions = (content: string): { cleanContent: string; options: string[] } => {
+    // 🔥 改用不会被 Markdown 解析的标记
+    const optionRegex = /<<<选项>>>([\s\S]*?)(?:\n\n|<<<|$)/;
+    const match = content.match(optionRegex);
+    
+    if (match) {
+      const optionsText = match[1];
+      const options = optionsText
+        .split('\n')
+        .map(line => line.replace(/^[-•▪︎]\s*/, '').trim())
+        .filter(line => line.length > 0 && line.length < 100)
+        .slice(0, 3);
+      
+      const cleanContent = content.replace(optionRegex, '').trim();
+      
+      // 🔥 调试：打印解析结果
+      console.log('解析内容:', { cleanContent, options, originalContent: content });
+      
+      return { cleanContent, options: options.length === 3 ? options : [] };
+    }
+    
+    return { cleanContent: content, options: [] };
+  };
+
+  const handleSend = async (messageText?: string) => {
+    const textToSend = messageText || inputValue.trim();
+    
+    if (!textToSend && uploadedFiles.length === 0) return;
 
     if (isGenerating) {
       handleStop();
       return;
     }
 
+    // 用户点击选项或输入新消息时，立即清除旧的选项
+    setSuggestedOptions([]);
+    setOptionMessageId(null);
+
     let userContent: string | Array<{type: string; text?: string; image_url?: {url: string}}>;
 
     if (uploadedFiles.length > 0) {
+      const imageFiles = uploadedFiles.filter(f => f.isImage);
+      
       userContent = [
-        { type: 'text', text: inputValue.trim() || '请分析这些图片' },
-        ...uploadedFiles.map(file => ({
+        { type: 'text', text: textToSend || '请分析这些文件' },
+        ...imageFiles.map(file => ({
           type: 'image_url',
-          image_url: { url: file.url }
+          image_url: { url: file.data }
         }))
       ];
     } else {
-      userContent = inputValue.trim();
+      userContent = textToSend;
     }
 
     const userMessage: Message = {
@@ -190,17 +357,19 @@ const handleEmojiClick = (e: React.MouseEvent) => {  // 🔥 必须接收参数
 
     setMessages(prev => [...prev, userMessage]);
     setInputValue('');
+    
+    const nonImageFiles = uploadedFiles.filter(f => !f.isImage);
     setUploadedFiles([]);
     setIsGenerating(true);
 
     const aiMessageId = uid();
-    const hasImages = uploadedFiles.length > 0;
+    const hasFiles = uploadedFiles.length > 0;
 
-    if (hasImages) {
+    if (hasFiles) {
       const loadingMessage: Message = {
         id: aiMessageId,
         role: 'ai',
-        content: '🔍 正在识别图片，请稍候...',
+        content: '🔍 正在处理文件，请稍候...',
         timestamp: Date.now()
       };
       setMessages(prev => [...prev, loadingMessage]);
@@ -215,6 +384,18 @@ const handleEmojiClick = (e: React.MouseEvent) => {  // 🔥 必须接收参数
         content: userContent
       });
 
+      const requestBody: Record<string, unknown> = {
+        messages: apiMessages
+      };
+
+      if (nonImageFiles.length > 0) {
+        requestBody.attachments = nonImageFiles.map(f => ({
+          name: f.name,
+          type: f.type,
+          data: f.data
+        }));
+      }
+
       abortControllerRef.current = new AbortController();
 
       const response = await fetch('/api/chat', {
@@ -222,9 +403,7 @@ const handleEmojiClick = (e: React.MouseEvent) => {  // 🔥 必须接收参数
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          messages: apiMessages
-        }),
+        body: JSON.stringify(requestBody),
         signal: abortControllerRef.current.signal
       });
 
@@ -263,7 +442,7 @@ const handleEmojiClick = (e: React.MouseEvent) => {  // 🔥 必须接收参数
               
               if (content) {
                 if (!hasStarted) {
-                  if (hasImages) {
+                  if (hasFiles) {
                     setMessages(prev => 
                       prev.map(msg => 
                         msg.id === aiMessageId 
@@ -308,6 +487,20 @@ const handleEmojiClick = (e: React.MouseEvent) => {  // 🔥 必须接收参数
               : msg
           )
         );
+      } else {
+        const { cleanContent, options } = extractOptions(fullContent);
+        
+        if (options.length === 3) {
+          setMessages(prev => 
+            prev.map(msg => 
+              msg.id === aiMessageId 
+                ? { ...msg, content: cleanContent }
+                : msg
+            )
+          );
+          setSuggestedOptions(options);
+          setOptionMessageId(aiMessageId); // 👈 关键：记录是哪条消息触发的选项
+        }
       }
 
     } catch (error: unknown) {
@@ -336,9 +529,41 @@ const handleEmojiClick = (e: React.MouseEvent) => {  // 🔥 必须接收参数
     }
   };
 
-  const renderMessageContent = (content: string | Array<{type: string; text?: string; image_url?: {url: string}}>) => {
+  const handleOptionClick = (option: string) => {
+    handleSend(option);
+  };
+
+  const renderMessageContent = (content: string | Array<{type: string; text?: string; image_url?: {url: string}}>, messageId?: string) => {
     if (typeof content === 'string') {
-      return content;
+      // ✅ 新的、更精确的判断逻辑
+      const shouldShowOptions = messageId === optionMessageId && suggestedOptions.length === 3;
+      
+      return (
+        <div>
+          <ReactMarkdown 
+            remarkPlugins={[remarkGfm, remarkMath]}
+            rehypePlugins={[rehypeKatex]}
+          >
+            {content}
+          </ReactMarkdown>
+          {shouldShowOptions && (
+            <div className="message-options">
+              <div className="options-label">💡点击选择✨</div>
+              <div className="options-buttons">
+                {suggestedOptions.map((option, index) => (
+                  <button
+                    key={index}
+                    className="option-button-in-message"
+                    onClick={() => handleOptionClick(option)}
+                  >
+                    {option}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      );
     }
     
     return (
@@ -420,19 +645,56 @@ const handleEmojiClick = (e: React.MouseEvent) => {  // 🔥 必须接收参数
                 )}
               </div>
               <div className="bubble">
-                {message.role === 'ai' && typeof message.content === 'string' ? (
-                  <ReactMarkdown 
-                    remarkPlugins={[remarkGfm, remarkMath]}
-                    rehypePlugins={[rehypeKatex]}
-                  >
-                    {message.content}
-                  </ReactMarkdown>
+                {message.role === 'ai' ? (
+                  renderMessageContent(message.content, message.id)
                 ) : (
                   renderMessageContent(message.content)
                 )}
               </div>
             </div>
           ))}
+          
+          {isGenerating && (
+            <div className="message ai">
+              <div className="avatar">
+                <Image
+                  src="/robot-santa.png"
+                  alt="AI助手"
+                  width={40}
+                  height={40}
+                  className="avatar-img"
+                />
+              </div>
+              <div className="bubble">
+                <div className="typing">
+                  <span></span>
+                  <span></span>
+                  <span></span>
+                </div>
+              </div>
+            </div>
+          )}
+          
+          {isLoadingOptions && messages.length === 1 && (
+            <div className="message ai">
+              <div className="avatar">
+                <Image
+                  src="/robot-santa.png"
+                  alt="AI助手"
+                  width={40}
+                  height={40}
+                  className="avatar-img"
+                />
+              </div>
+              <div className="bubble">
+                <div className="typing">
+                  <span></span>
+                  <span></span>
+                  <span></span>
+                </div>
+              </div>
+            </div>
+          )}
           
           <div ref={messagesEndRef} />
         </div>
@@ -441,33 +703,37 @@ const handleEmojiClick = (e: React.MouseEvent) => {  // 🔥 必须接收参数
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/*"
+            accept="*/*"
             multiple
             onChange={handleFileUpload}
             style={{ display: 'none' }}
-            disabled={isUploading}
           />
           
           <button 
             className="upload-button"
             onClick={() => fileInputRef.current?.click()}
-            disabled={isUploading}
-            title="上传图片"
+            title="上传文件"
           >
-            {isUploading ? '...' : '上传'}
+            上传
           </button>
 
           <div className="input-wrapper">
             {uploadedFiles.length > 0 && (
               <div className="uploaded-files">
                 {uploadedFiles.map((file, index) => (
-                  <div key={index} className="file-preview">
-                    <Image
-                      src={file.url}
-                      alt={file.name}
-                      width={80}
-                      height={80}
-                    />
+                  <div key={index} className={file.isImage ? "file-preview" : "file-preview-text"}>
+                    {file.isImage ? (
+                      <Image
+                        src={file.data}
+                        alt={file.name}
+                        width={80}
+                        height={80}
+                      />
+                    ) : (
+                      <div className="file-name">
+                        📄 {file.name}
+                      </div>
+                    )}
                     <button 
                       className="remove-file"
                       onClick={() => removeFile(index)}
@@ -492,7 +758,7 @@ const handleEmojiClick = (e: React.MouseEvent) => {  // 🔥 必须接收参数
 
           <button 
             className="send-button"
-            onClick={handleSend}
+            onClick={() => handleSend()}
             disabled={!inputValue.trim() && uploadedFiles.length === 0 && !isGenerating}
           >
             {isGenerating ? '⏸' : '发送'}
