@@ -310,8 +310,8 @@ export default function Home() {
         );
       }
 
-    } catch (error: any) {
-      if (error?.name === 'AbortError') {
+    } catch (error: unknown) {
+      if (error instanceof Error && error.name === 'AbortError') {
         console.log('生成已停止');
       } else {
         console.error('请求错误:', error);
@@ -424,13 +424,6 @@ export default function Home() {
                   <ReactMarkdown 
                     remarkPlugins={[remarkGfm, remarkMath]}
                     rehypePlugins={[rehypeKatex]}
-                    components={{
-                      code: ({children}) => (
-                        <code className="inline-code">
-                          {children}
-                        </code>
-                      )
-                    }}
                   >
                     {message.content}
                   </ReactMarkdown>
