@@ -412,10 +412,10 @@ export default function Home() {
     let retryCount = 0;
     const maxRetries = 3;
     let hasValidOptions = false;
+    let aiMessageCreated = hasFiles;
 
     while (!hasValidOptions && retryCount < maxRetries) {
       try {
-        // 构建API消息
         const apiMessages: Array<{ role: string; content: string | Array<{type: string; text?: string; image_url?: {url: string}}> }> = messages.map(msg => {
           if (Array.isArray(msg.content)) {
             const textPart = msg.content.find(item => item.type === 'text');
@@ -431,11 +431,38 @@ export default function Home() {
           };
         });
 
-        // 添加当前消息
-        apiMessages.push({
-          role: 'user',
-          content: userContent
-        });
+        // 👇 新增：处理当前消息，重试时附加提示
+        if (retryCount > 0) {
+          // 重试时添加隐形提示
+          let enhancedContent: string | Array<{type: string; text?: string; image_url?: {url: string}}>;
+          
+          if (Array.isArray(userContent)) {
+            // 图片消息
+            enhancedContent = userContent.map((item, index) => {
+              if (index === 0 && item.type === 'text') {
+                return {
+                  ...item,
+                  text: `${item.text}\n\n[系统提示：请务必在回复文末按照格式生成3个选项]`
+                };
+              }
+              return item;
+            });
+          } else {
+            // 文本消息
+            enhancedContent = `${userContent}\n\n[系统提示：请务必在回复文末按照格式生成3个选项]`;
+          }
+          
+          apiMessages.push({
+            role: 'user',
+            content: enhancedContent
+          });
+        } else {
+          // 首次发送，不添加提示
+          apiMessages.push({
+            role: 'user',
+            content: userContent
+          });
+        }
 
         abortControllerRef.current = new AbortController();
 
@@ -485,15 +512,7 @@ export default function Home() {
                 
                 if (content) {
                   if (!hasStarted) {
-                    if (hasFiles) {
-                      setMessages(prev => 
-                        prev.map(msg => 
-                          msg.id === aiMessageId 
-                            ? { ...msg, content: content }
-                            : msg
-                        )
-                      );
-                    } else {
+                    if (!aiMessageCreated) {
                       const aiMessage: Message = {
                         id: aiMessageId,
                         role: 'ai',
@@ -501,6 +520,15 @@ export default function Home() {
                         timestamp: Date.now()
                       };
                       setMessages(prev => [...prev, aiMessage]);
+                      aiMessageCreated = true;
+                    } else {
+                      setMessages(prev => 
+                        prev.map(msg => 
+                          msg.id === aiMessageId 
+                            ? { ...msg, content: content }
+                            : msg
+                        )
+                      );
                     }
                     hasStarted = true;
                   }
@@ -553,7 +581,7 @@ export default function Home() {
               setMessages(prev => 
                 prev.map(msg => 
                   msg.id === aiMessageId 
-                    ? { ...msg, content: `${cleanContent}\n\n🔄 正在重新生成选项... (${retryCount}/${maxRetries})` }
+                    ? { ...msg, content: `🔄 正在重新生成选项... (${retryCount}/${maxRetries})` }
                     : msg
                 )
               );
@@ -586,13 +614,26 @@ export default function Home() {
           retryCount++;
           if (retryCount < maxRetries) {
             console.log(`请求失败，重试第 ${retryCount} 次...`);
-            setMessages(prev => 
-              prev.map(msg => 
-                msg.id === aiMessageId 
-                  ? { ...msg, content: `⚠️ 请求失败，正在重试... (${retryCount}/${maxRetries})` }
-                  : msg
-              )
-            );
+            
+            if (!aiMessageCreated) {
+              const errorMessage: Message = {
+                id: aiMessageId,
+                role: 'ai',
+                content: `⚠️ 请求失败，正在重试... (${retryCount}/${maxRetries})`,
+                timestamp: Date.now()
+              };
+              setMessages(prev => [...prev, errorMessage]);
+              aiMessageCreated = true;
+            } else {
+              setMessages(prev => 
+                prev.map(msg => 
+                  msg.id === aiMessageId 
+                    ? { ...msg, content: `⚠️ 请求失败，正在重试... (${retryCount}/${maxRetries})` }
+                    : msg
+                )
+              );
+            }
+            
             await new Promise(resolve => setTimeout(resolve, 1000));
           } else {
             setMessages(prev => 
@@ -820,7 +861,7 @@ export default function Home() {
                 />
               </div>
               <div className="bubble">
-                <div className="typing">
+                                <div className="typing">
                   <span></span>
                   <span></span>
                   <span></span>
@@ -883,7 +924,7 @@ export default function Home() {
             />
           </div>
 
-                    <button 
+          <button 
             className="send-button"
             onClick={() => handleSend()}
             disabled={!inputValue.trim() && uploadedFiles.length === 0 && !isGenerating}
