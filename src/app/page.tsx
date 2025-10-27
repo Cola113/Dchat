@@ -519,18 +519,50 @@ export default function Home() {
     handleSend(option);
   };
 
+  // 👇 处理简单文本中的粗体
+  const renderTextWithBold = (text: string) => {
+    const parts = text.split(/(\*\*.*?\*\*)/g);
+    
+    return parts.map((part, index) => {
+      if (part.startsWith('**') && part.endsWith('**')) {
+        const boldText = part.slice(2, -2);
+        return <strong key={index} style={{fontWeight: '700'}}>{boldText}</strong>;
+      }
+      return <span key={index}>{part}</span>;
+    });
+  };
+
   const renderMessageContent = (content: string | Array<{type: string; text?: string; image_url?: {url: string}}>, messageId?: string) => {
     if (typeof content === 'string') {
       const shouldShowOptions = messageId === optionMessageId && suggestedOptions.length === 3;
       
+      // 检查是否包含复杂 Markdown 语法
+      const hasComplexMarkdown = content.includes('```') || content.includes('#') || content.includes('- ') || content.includes('* ');
+      
       return (
         <div>
-          <ReactMarkdown 
-            remarkPlugins={[remarkGfm, remarkMath]}
-            rehypePlugins={[rehypeKatex]}
-          >
-            {content}
-          </ReactMarkdown>
+          {hasComplexMarkdown ? (
+            // 使用 ReactMarkdown 处理复杂格式
+            <ReactMarkdown 
+              remarkPlugins={[remarkGfm, remarkMath]}
+              rehypePlugins={[rehypeKatex]}
+              components={{
+                strong: ({node, ...props}) => (
+                  <strong style={{fontWeight: '700', color: 'inherit'}} {...props} />
+                ),
+                em: ({node, ...props}) => (
+                  <em style={{fontStyle: 'italic'}} {...props} />
+                )
+              }}
+            >
+              {content}
+            </ReactMarkdown>
+          ) : (
+            // 简单文本用自定义函数处理
+            <div style={{whiteSpace: 'pre-wrap'}}>
+              {renderTextWithBold(content)}
+            </div>
+          )}
           {shouldShowOptions && (
             <div className="message-options">
               <div className="options-label">💡点击选择✨</div>
