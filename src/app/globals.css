@@ -19,7 +19,7 @@ body {
   overflow: hidden;
 }
 
-/* 雪花容器 - 统一层级，在聊天容器下方 */
+/* 雪花容器 */
 .snowflakes {
   pointer-events: none;
   position: absolute;
@@ -39,7 +39,7 @@ body {
   text-shadow: 0 0 2px rgba(255, 255, 255, 0.3);
 }
 
-/* 下落动画（向右飘动） */
+/* 下落动画 */
 @keyframes snowfall {
   0% {
     transform: translateY(0) translateX(0) rotate(0deg);
@@ -54,7 +54,7 @@ body {
   }
 }
 
-/* 更加不均匀的雪花大小 - 扩大尺寸范围 */
+/* 雪花大小变化 */
 .snowflake:nth-child(10n+1) {
   font-size: 0.3em;
   animation-duration: 12s;
@@ -137,7 +137,7 @@ body {
 .snowflake:nth-child(30n+29) { left: 88%; animation-delay: -0.5s; top: -12%; }
 .snowflake:nth-child(30n+30) { left: 95%; animation-delay: -1.8s; top: -19%; }
 
-/* 标题流光 + 招牌摇摆 - 圣诞经典配色 */
+/* 标题流光 + 招牌摇摆 */
 .shimmer {
   background-size: 200% auto;
   animation: shimmer 8s linear infinite, sway8 15s ease-in-out infinite;
@@ -160,7 +160,7 @@ body {
   85% { transform: rotate(0.8deg); transform-origin: 50% 0%; }
 }
 
-/* 副标题闪烁星光 - 圣诞红色 */
+/* 副标题闪烁星光 */
 .glow {
   text-shadow: 0 0 5px rgba(153, 27, 27, 0.4);
   animation: sparkle3 1.5s ease-in-out infinite;
@@ -188,6 +188,7 @@ body {
   50% { transform: translateY(-4px); }
 }
 
+/* 聊天容器 */
 .chat-container {
   position: fixed;
   inset: 0;
@@ -205,7 +206,6 @@ body {
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
 }
 
-/* 🔥 手机上去掉边框 */
 @media (min-width: 768px) {
   .chat-container {
     border-left: 1px solid rgba(255, 255, 255, 0.3);
@@ -213,10 +213,10 @@ body {
   }
 }
 
-
+/* 头部 */
 .header {
   flex-shrink: 0;
-  padding: 20px;
+  padding: 4px  20px;
   text-align: center;
   background: rgba(255, 255, 255, 0.25);
   backdrop-filter: blur(10px);
@@ -251,18 +251,17 @@ body {
   border-radius: 4px;
   transition: background 0.3s;
 }
-
 .chat-messages::-webkit-scrollbar-thumb:hover {
   background: rgba(220, 38, 38, 0.6);
 }
 
+/* 消息样式 */
 .message {
   display: flex;
   gap: 8px; 
   max-width: 90%;
   animation: messageIn 0.3s ease-out;
 }
-
 
 @keyframes messageIn {
   from { opacity: 0; transform: translateY(10px); }
@@ -278,6 +277,7 @@ body {
   flex-direction: row-reverse;
 }
 
+/* 头像 */
 .avatar {
   width: 40px;
   height: 40px;
@@ -300,6 +300,7 @@ body {
   object-fit: cover;
 }
 
+/* 消息气泡 */
 .bubble {
   padding: 12px 16px;
   border-radius: 18px;
@@ -325,21 +326,22 @@ body {
   color: #991b1b;
 }
 
+/* 输入区域 */
 .input-area {
   flex-shrink: 0;
-  padding: 16px 20px;
+  padding: 6px 20px;
   background: rgba(255, 255, 255, 0.3);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   border-top: 1px solid rgba(34, 197, 94, 0.3);
   display: flex;
-  gap: 12px;
+  gap: 6px;
   align-items: flex-end;
 }
 
 .input-box {
   flex: 1;
-  padding: 12px 16px;
+  padding: 8px 16px;
   border-radius: 24px;
   border: 1px solid rgba(22, 163, 74, 0.3);
   background: rgba(255, 255, 255, 0.6);
@@ -357,9 +359,9 @@ body {
   box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.1);
 }
 
-/* 🔥 发送按钮强制一行显示 */
+/* 发送按钮 */
 .send-button {
-  padding: 12px 24px;
+  padding: 8px 24px;
   border-radius: 24px;
   border: none;
   background: linear-gradient(to right, #16a34a, #dc2626);
@@ -388,6 +390,7 @@ body {
   transform: none;
 }
 
+/* 打字动画 */
 .typing {
   display: flex;
   gap: 4px;
@@ -410,7 +413,7 @@ body {
   30% { transform: translateY(-10px); opacity: 1; }
 }
 
-/* 冬季 emoji 特效基础样式 */
+/* 冬季 emoji 特效 */
 .winter-emoji {
   position: absolute;
   pointer-events: none;
@@ -418,7 +421,6 @@ body {
   z-index: 100;
 }
 
-/* 5种不同的消失动画 */
 .winter-emoji-anim-1 {
   animation: winterFloat1 2s ease-out forwards;
 }
@@ -550,15 +552,6 @@ body {
   }
 }
 
-/* 临时屏蔽左下角"设置"常见元素 */
-.fixed.left-4.bottom-4,
-.fixed.left-5.bottom-5,
-.fixed.left-6.bottom-6,
-[aria-label="设置"], [title="设置"],
-[aria-label="Settings"], [title="Settings"] {
-  display: none !important;
-}
-
 /* Markdown 渲染样式 */
 .bubble .inline-code {
   background: rgba(0, 0, 0, 0.1);
@@ -625,6 +618,7 @@ body {
   overflow-y: hidden;
 }
 
+/* 输入包装器 */
 .input-wrapper {
   flex: 1;
   display: flex;
@@ -632,6 +626,7 @@ body {
   gap: 8px;
 }
 
+/* 已上传文件预览 */
 .uploaded-files {
   display: flex;
   gap: 8px;
@@ -654,6 +649,7 @@ body {
   object-fit: cover;
 }
 
+/* 删除文件按钮 */
 .remove-file {
   position: absolute;
   top: 4px;
@@ -678,42 +674,16 @@ body {
   transform: scale(1.1);
 }
 
-/* 非图片文件预览样式 */
-.file-preview-text {
-  position: relative;
-  min-width: 120px;
-  max-width: 200px;
-  height: 48px;
-  border-radius: 12px;
-  padding: 8px 12px;
-  border: 2px solid rgba(34, 197, 94, 0.3);
-  background: rgba(255, 255, 255, 0.8);
-  display: flex;
-  align-items: center;
-}
-
-.file-name {
-  flex: 1;
-  font-size: 0.85rem;
-  color: #166534;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  padding-right: 24px;
-}
-
-/* 上传按钮 - 圣诞红绿渐变 */
+/* 上传按钮 */
 .upload-button {
   flex-shrink: 0;
-  min-width: 60px;
-  height: 48px;
-  padding: 0 16px;
+  padding: 8px 18px;  /* 👈 和发送按钮一致 */
   border-radius: 24px;
   border: none;
   background: linear-gradient(135deg, #dc2626 0%, #ef4444 50%, #16a34a 100%);
   color: white;
-  font-weight: 700;
-  font-size: 0.9rem;
+  font-weight: 600;
+  font-size: 0.95rem;
   cursor: pointer;
   transition: all 0.3s;
   box-shadow: 0 4px 12px rgba(220, 38, 38, 0.3);
@@ -737,7 +707,7 @@ body {
   transform: none;
 }
 
-/* 消息中的上传图片 - 小尺寸 */
+/* 消息中的上传图片 */
 .uploaded-image {
   max-width: 200px;
   max-height: 150px;
@@ -768,6 +738,7 @@ body {
   gap: 6px;
 }
 
+/* 选项按钮 */
 .option-button-in-message {
   display: flex;
   align-items: center;
@@ -810,7 +781,7 @@ body {
   transform: translateX(-2px) scale(0.98);
 }
 
-/* 用户消息中的选项按钮（如果需要） */
+/* 用户消息中的选项按钮 */
 .message.user .option-button-in-message {
   background: rgba(220, 38, 38, 0.15);
   border-color: rgba(220, 38, 38, 0.3);
@@ -824,14 +795,4 @@ body {
 .message.user .option-button-in-message:hover {
   background: rgba(220, 38, 38, 0.25);
   border-color: rgba(220, 38, 38, 0.5);
-}
-
-/* 确保 AI 消息冒泡右下角是圆角 */
-.message.ai .bubble {
-  border-radius: 18px 18px 18px 4px;
-}
-
-/* 用户消息的冒泡右下角保持尖角 */
-.message.user .bubble {
-  border-radius: 18px 18px 4px 18px;
 }

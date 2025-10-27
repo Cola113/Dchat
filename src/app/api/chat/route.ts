@@ -3,17 +3,13 @@ import { NextRequest } from 'next/server';
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { messages, attachments, isFirstLoad } = body;
+    const { messages, isFirstLoad } = body;
 
     if (!messages || !Array.isArray(messages)) {
       return new Response(
         JSON.stringify({ error: '无效的消息格式' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
-    }
-
-    if (attachments && Array.isArray(attachments)) {
-      console.log('收到附件:', attachments.map((a: { name: string }) => a.name));
     }
 
     let systemMessage: { role: string; content: string };
@@ -102,7 +98,7 @@ export async function POST(req: NextRequest) {
 1. 选项是"用户可能说的话"，不是"AI建议的话题"
 2. 用第一人称（我/我想/能不能）写选项
 3. 选项要像用户会打的字一样自然
-4.绝对不能出现"选项1""选项2"等字样
+4. 绝对不能出现"选项1""选项2"等字样
 
 🎯 选项示例参考：
 用户说："最近好累啊"

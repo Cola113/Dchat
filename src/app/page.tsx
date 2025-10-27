@@ -21,7 +21,6 @@ type UploadedFile = {
   name: string;
   type: string;
   data: string;
-  isImage: boolean;
 };
 
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -62,10 +61,7 @@ function Snowflakes() {
 
 export default function Home() {
   const initialMessageId = useRef(uid()).current;
-  
-  // 👇 新增一个 state，用于记录当前应该显示选项的消息ID
   const [optionMessageId, setOptionMessageId] = useState<string | null>(null);
-
   const [messages, setMessages] = useState<Message[]>([
     {
       id: initialMessageId,
@@ -89,7 +85,6 @@ export default function Home() {
     setIsLoadingOptions(true);
     
     try {
-      // 显示加载状态
       setMessages(prev => prev.map(msg => 
         msg.id === initialMessageId 
           ? { ...msg, content: '正在准备超级有趣的欢迎语和话题...' } 
@@ -148,10 +143,8 @@ export default function Home() {
         }
       }
 
-      // 新增：分离欢迎语和选项
       const { cleanContent, options } = extractOptions(fullContent);
       
-      // 更新初始欢迎消息
       if (cleanContent) {
         setMessages(prev => prev.map(msg => 
           msg.id === initialMessageId 
@@ -162,16 +155,15 @@ export default function Home() {
       
       if (options.length === 3) {
         setSuggestedOptions(options);
-        setOptionMessageId(initialMessageId); // 👈 设置初始消息ID
+        setOptionMessageId(initialMessageId);
       } else {
         const backupOptions = generateRandomFallbackOptions();
         setSuggestedOptions(backupOptions);
-        setOptionMessageId(initialMessageId); // 👈 即使是fallback，也设置初始消息ID
+        setOptionMessageId(initialMessageId);
       }
 
     } catch (error) {
       console.error('获取初始选项失败:', error);
-      // 显示错误信息
       setMessages(prev => prev.map(msg => 
         msg.id === initialMessageId 
           ? { ...msg, content: '抱歉，欢迎语加载失败了 😢 但你可以随便聊聊哦！' } 
@@ -179,7 +171,7 @@ export default function Home() {
       ));
       const backupOptions = generateRandomFallbackOptions();
       setSuggestedOptions(backupOptions);
-      setOptionMessageId(initialMessageId); // 👈 失败时也要设置，否则UI可能不刷新
+      setOptionMessageId(initialMessageId);
     } finally {
       setIsLoadingOptions(false);
     }
@@ -204,6 +196,7 @@ export default function Home() {
     }, 1000);
     
     return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const scrollToBottom = () => {
@@ -249,19 +242,31 @@ export default function Home() {
     if (!files || files.length === 0) return;
 
     try {
-      const filePromises = Array.from(files).map(async (file) => {
+      // 过滤掉非图片文件
+      const imageFiles = Array.from(files).filter(file => {
+        if (!file.type.startsWith('image/')) {
+          alert(`"${file.name}" 不是图片文件，已跳过`);
+          return false;
+        }
+        return true;
+      });
+
+      if (imageFiles.length === 0) {
+        alert('请选择图片文件！');
+        return;
+      }
+
+      const filePromises = imageFiles.map(async (file) => {
         return new Promise<UploadedFile>((resolve, reject) => {
           const reader = new FileReader();
           
           reader.onload = () => {
             const result = reader.result as string;
-            const isImage = file.type.startsWith('image/');
             
             resolve({
               name: file.name,
               type: file.type,
-              data: result,
-              isImage
+              data: result
             });
           };
           
@@ -295,7 +300,6 @@ export default function Home() {
   };
 
   const extractOptions = (content: string): { cleanContent: string; options: string[] } => {
-    // 🔥 改用不会被 Markdown 解析的标记
     const optionRegex = /<<<选项>>>([\s\S]*?)(?:\n\n|<<<|$)/;
     const match = content.match(optionRegex);
     
@@ -308,9 +312,6 @@ export default function Home() {
         .slice(0, 3);
       
       const cleanContent = content.replace(optionRegex, '').trim();
-      
-      // 🔥 调试：打印解析结果
-      console.log('解析内容:', { cleanContent, options, originalContent: content });
       
       return { cleanContent, options: options.length === 3 ? options : [] };
     }
@@ -328,18 +329,15 @@ export default function Home() {
       return;
     }
 
-    // 用户点击选项或输入新消息时，立即清除旧的选项
     setSuggestedOptions([]);
     setOptionMessageId(null);
 
     let userContent: string | Array<{type: string; text?: string; image_url?: {url: string}}>;
 
     if (uploadedFiles.length > 0) {
-      const imageFiles = uploadedFiles.filter(f => f.isImage);
-      
       userContent = [
-        { type: 'text', text: textToSend || '请分析这些文件' },
-        ...imageFiles.map(file => ({
+        { type: 'text', text: textToSend || '请分析这些图片' },
+        ...uploadedFiles.map(file => ({
           type: 'image_url',
           image_url: { url: file.data }
         }))
@@ -357,8 +355,6 @@ export default function Home() {
 
     setMessages(prev => [...prev, userMessage]);
     setInputValue('');
-    
-    const nonImageFiles = uploadedFiles.filter(f => !f.isImage);
     setUploadedFiles([]);
     setIsGenerating(true);
 
@@ -369,7 +365,7 @@ export default function Home() {
       const loadingMessage: Message = {
         id: aiMessageId,
         role: 'ai',
-        content: '🔍 正在处理文件，请稍候...',
+        content: '🔍 正在分析图片，请稍候...',
         timestamp: Date.now()
       };
       setMessages(prev => [...prev, loadingMessage]);
@@ -384,18 +380,6 @@ export default function Home() {
         content: userContent
       });
 
-      const requestBody: Record<string, unknown> = {
-        messages: apiMessages
-      };
-
-      if (nonImageFiles.length > 0) {
-        requestBody.attachments = nonImageFiles.map(f => ({
-          name: f.name,
-          type: f.type,
-          data: f.data
-        }));
-      }
-
       abortControllerRef.current = new AbortController();
 
       const response = await fetch('/api/chat', {
@@ -403,7 +387,9 @@ export default function Home() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(requestBody),
+        body: JSON.stringify({
+          messages: apiMessages
+        }),
         signal: abortControllerRef.current.signal
       });
 
@@ -499,8 +485,8 @@ export default function Home() {
             )
           );
           setSuggestedOptions(options);
-          setOptionMessageId(aiMessageId); // 👈 关键：记录是哪条消息触发的选项
-        }
+          setOptionMessageId(aiMessageId);
+                }
       }
 
     } catch (error: unknown) {
@@ -535,7 +521,6 @@ export default function Home() {
 
   const renderMessageContent = (content: string | Array<{type: string; text?: string; image_url?: {url: string}}>, messageId?: string) => {
     if (typeof content === 'string') {
-      // ✅ 新的、更精确的判断逻辑
       const shouldShowOptions = messageId === optionMessageId && suggestedOptions.length === 3;
       
       return (
@@ -616,11 +601,11 @@ export default function Home() {
       <div className="chat-container">
         <div className="header">
           <div style={{ display: 'inline-block' }}>
-            <h1 className="text-4xl md:text-5xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-red-600 via-green-600 to-red-600 shimmer" style={{ letterSpacing: '-0.02em' }}>
+            <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-red-600 via-green-600 to-red-600 shimmer" style={{ letterSpacing: '-0.02em' }}>
               可乐的小站
             </h1>
           </div>
-          <p className="mt-2 text-red-700/90 text-base glow">
+          <p className="mt-1 text-red-700/90 text-sm glow">
             <span className="emoji-bounce">🎄</span>顶<span className="emoji-bounce">🎅</span>级<span className="emoji-bounce">⛄</span>牛<span className="emoji-bounce">🎁</span>马<span className="emoji-bounce">🔔</span>
           </p>
         </div>
@@ -703,7 +688,7 @@ export default function Home() {
           <input
             ref={fileInputRef}
             type="file"
-            accept="*/*"
+            accept="image/*"
             multiple
             onChange={handleFileUpload}
             style={{ display: 'none' }}
@@ -712,28 +697,22 @@ export default function Home() {
           <button 
             className="upload-button"
             onClick={() => fileInputRef.current?.click()}
-            title="上传文件"
+            title="上传图片"
           >
-            上传
+            🖼️
           </button>
 
           <div className="input-wrapper">
             {uploadedFiles.length > 0 && (
               <div className="uploaded-files">
                 {uploadedFiles.map((file, index) => (
-                  <div key={index} className={file.isImage ? "file-preview" : "file-preview-text"}>
-                    {file.isImage ? (
-                      <Image
-                        src={file.data}
-                        alt={file.name}
-                        width={80}
-                        height={80}
-                      />
-                    ) : (
-                      <div className="file-name">
-                        📄 {file.name}
-                      </div>
-                    )}
+                  <div key={index} className="file-preview">
+                    <Image
+                      src={file.data}
+                      alt={file.name}
+                      width={80}
+                      height={80}
+                    />
                     <button 
                       className="remove-file"
                       onClick={() => removeFile(index)}
