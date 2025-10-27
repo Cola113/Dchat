@@ -796,3 +796,16 @@ body {
   background: rgba(220, 38, 38, 0.25);
   border-color: rgba(220, 38, 38, 0.5);
 }
+
+/* 粘贴提示动画 */
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateX(100px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
