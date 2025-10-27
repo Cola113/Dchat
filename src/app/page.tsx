@@ -82,33 +82,33 @@ export default function Home() {
     scrollToBottom();
   }, [messages]);
 
-  const handleEmojiClick = () => {
-    const winterEmojiList = [
-      '❄️', '⛄', '☃️', '🌨️', '🏔️', '🧊', '❄',
-      '🎄', '🎅', '🤶', '🎁', '🎀', '🔔', '🕯️', '⭐', '🌟', '✨', '🦌', '🛷', '🧦', '🎊', '🎉',
-      '🍪', '🥛', '☕', '🍵', '🫖', '🍫', '🥧', '🧁',
-      '🧤', '🧣', '🎩', '👢',
-      '🐧', '🦭', '🐻‍❄️',
-      '💫', '🌠', '💎', '🪄'
-    ];
-    
-    const randomEmoji = winterEmojiList[Math.floor(Math.random() * winterEmojiList.length)];
-    const randomAnim = Math.floor(Math.random() * 5) + 1;
-    
-    const newEmoji: WinterEmoji = {
-      id: uid(),
-      x: e.clientX,      
-      y: e.clientY,
-      emoji: randomEmoji,
-      anim: randomAnim,
-    };
-
-    setWinterEmojis((prev) => [...prev, newEmoji]);
-
-    setTimeout(() => {
-      setWinterEmojis((prev) => prev.filter((item) => item.id !== newEmoji.id));
-    }, 2500);
+const handleEmojiClick = (e: React.MouseEvent) => {  // 🔥 必须接收参数
+  const winterEmojiList = [
+    '❄️', '⛄', '☃️', '🌨️', '🏔️', '🧊', '❄',
+    '🎄', '🎅', '🤶', '🎁', '🎀', '🔔', '🕯️', '⭐', '🌟', '✨', '🦌', '🛷', '🧦', '🎊', '🎉',
+    '🍪', '🥛', '☕', '🍵', '🫖', '🍫', '🥧', '🧁',
+    '🧤', '🧣', '🎩', '👢',
+    '🐧', '🦭', '🐻‍❄️',
+    '💫', '🌠', '💎', '🪄'
+  ];
+  
+  const randomEmoji = winterEmojiList[Math.floor(Math.random() * winterEmojiList.length)];
+  const randomAnim = Math.floor(Math.random() * 5) + 1;
+  
+  const newEmoji: WinterEmoji = {
+    id: uid(),
+    x: e.clientX,      // 🔥 现在可以正确使用
+    y: e.clientY,      // 🔥 现在可以正确使用
+    emoji: randomEmoji,
+    anim: randomAnim,
   };
+
+  setWinterEmojis((prev) => [...prev, newEmoji]);
+
+  setTimeout(() => {
+    setWinterEmojis((prev) => prev.filter((item) => item.id !== newEmoji.id));
+  }, 2500);
+};
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
