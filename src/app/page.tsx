@@ -415,47 +415,44 @@ export default function Home() {
     let aiMessageCreated = hasFiles;
 
     while (!hasValidOptions && retryCount < maxRetries) {
-      try {
-        const apiMessages: Array<{ role: string; content: string | Array<{type: string; text?: string; image_url?: {url: string}}> }> = messages.map(msg => {
-          if (Array.isArray(msg.content)) {
-            const textPart = msg.content.find(item => item.type === 'text');
-            return {
-              role: msg.role === 'ai' ? 'assistant' : 'user',
-              content: textPart?.text || '[图片消息]'
-            };
-          }
-          
+    try {
+      const apiMessages: Array<{ role: string; content: string | Array<{type: string; text?: string; image_url?: {url: string}}> }> = messages.map(msg => {
+        if (Array.isArray(msg.content)) {
+          const textPart = msg.content.find(item => item.type === 'text');
           return {
             role: msg.role === 'ai' ? 'assistant' : 'user',
-            content: typeof msg.content === 'string' ? msg.content : '[未知消息]'
+            content: textPart?.text || '[图片消息]'
           };
-        });
-
-        // 👇 新增：处理当前消息，重试时附加提示
-        if (retryCount > 0) {
-          // 重试时添加隐形提示
-          let enhancedContent: string | Array<{type: string; text?: string; image_url?: {url: string}}>;
-          
-          if (Array.isArray(userContent)) {
-            // 图片消息
-            enhancedContent = userContent.map((item, index) => {
-              if (index === 0 && item.type === 'text') {
-                return {
-                  ...item,
-                  text: `${item.text}\n\n[系统提示：请务必在回复文末按照格式生成3个选项]`
-                };
-              }
-              return item;
-            });
-          } else {
-            // 文本消息
-            enhancedContent = `${userContent}\n\n[系统提示：请务必在回复文末按照格式生成3个选项]`;
+        }
+        
+        return {
+          role: msg.role === 'ai' ? 'assistant' : 'user',
+          content: typeof msg.content === 'string' ? msg.content : '[未知消息]'
+        };
+      });
+      // 👇 关键修改：每次都添加提示（不再判断 retryCount > 0）
+      let enhancedContent: string | Array<{type: string; text?: string; image_url?: {url: string}}>;
+      
+      if (Array.isArray(userContent)) {
+        // 图片消息：在文本部分添加提示
+        enhancedContent = userContent.map((item, index) => {
+          if (index === 0 && item.type === 'text') {
+            return {
+              ...item,
+              text: `${item.text}\n\n[系统提示：请务必在回复文末按照格式生成3个选项]`
+            };
           }
-          
-          apiMessages.push({
-            role: 'user',
-            content: enhancedContent
-          });
+          return item;
+        });
+      } else {
+        // 文本消息：直接在文末添加提示
+        enhancedContent = `${userContent}\n\n[系统提示：请务必在回复文末按照格式生成3个选项]`;
+      }
+      
+      apiMessages.push({
+        role: 'user',
+        content: enhancedContent
+      });
         } else {
           // 首次发送，不添加提示
           apiMessages.push({
