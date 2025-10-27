@@ -14,32 +14,16 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '没有文件' }, { status: 400 });
     }
 
-    // 检查文件类型
-    if (!file.type.startsWith('image/')) {
-      return NextResponse.json({ error: '只能上传图片文件' }, { status: 400 });
-    }
-
-    // 检查文件大小 (10MB限制)
-    const maxSize = 10 * 1024 * 1024; // 10MB
-    if (file.size > maxSize) {
-      return NextResponse.json({ error: '文件大小不能超过10MB' }, { status: 400 });
-    }
-
-    const blob = await put(`uploads/${Date.now()}-${file.name}`, file, {
+    const { url } = await put(`uploads/${Date.now()}-${file.name}`, file, {
       access: 'public',
-      addRandomSuffix: true,
-      // 如果使用私有空间，需要添加token
-      // token: process.env.BLOB_READ_WRITE_TOKEN
     });
 
-    return NextResponse.json({ url: blob.url });
-  } catch (error: unknown) {
+    return NextResponse.json({ url });
+  } catch (error) {
     console.error('上传错误:', error);
-    const errorMessage = error instanceof Error ? error.message : '上传失败';
-    return NextResponse.json({ 
-      error: errorMessage
-    }, { 
-      status: 500 
-    });
+    return NextResponse.json(
+      { error: '文件上传失败，请检查配置' },
+      { status: 500 }
+    );
   }
 }
