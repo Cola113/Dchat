@@ -76,10 +76,49 @@ export default function Home() {
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [suggestedOptions, setSuggestedOptions] = useState<string[]>([]);
   const [isLoadingOptions, setIsLoadingOptions] = useState(false);
+  const [pasteHint, setPasteHint] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // 👇 添加粘贴事件监听
+  useEffect(() => {
+    const handlePaste = async (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        
+        if (item.type.indexOf('image') !== -1) {
+          e.preventDefault();
+          
+          const file = item.getAsFile();
+          if (!file) continue;
+
+          const reader = new FileReader();
+          reader.onload = () => {
+            const result = reader.result as string;
+            
+            setUploadedFiles(prev => [...prev, {
+              name: `截图-${new Date().toLocaleTimeString('zh-CN')}.png`,
+              type: file.type,
+              data: result
+            }]);
+            
+            setPasteHint('✅ 图片已粘贴！');
+            setTimeout(() => setPasteHint(null), 2000);
+          };
+          
+          reader.readAsDataURL(file);
+        }
+      }
+    };
+
+    document.addEventListener('paste', handlePaste);
+    return () => document.removeEventListener('paste', handlePaste);
+  }, []);
 
   const fetchInitialOptions = async () => {
     setIsLoadingOptions(true);
@@ -242,7 +281,6 @@ export default function Home() {
     if (!files || files.length === 0) return;
 
     try {
-      // 过滤掉非图片文件
       const imageFiles = Array.from(files).filter(file => {
         if (!file.type.startsWith('image/')) {
           alert(`"${file.name}" 不是图片文件，已跳过`);
@@ -371,141 +409,207 @@ export default function Home() {
       setMessages(prev => [...prev, loadingMessage]);
     }
 
-    try {
-      const apiMessages = messages.map(msg => ({
-        role: msg.role === 'ai' ? 'assistant' : 'user',
-        content: msg.content
-      })).concat({
-        role: 'user',
-        content: userContent
-      });
+    // 👇 新增：重试机制
+    let retryCount = 0;
+    const maxRetries = 3;
+    let hasValidOptions = false;
 
-      abortControllerRef.current = new AbortController();
+    while (!hasValidOptions && retryCount < maxRetries) {
+      try {
+        // 👇 优化：历史消息中的图片转为文本
+        const apiMessages = messages.map(msg => {
+          if (Array.isArray(msg.content)) {
+            const textPart = msg.content.find(item => item.type === 'text');
+            return {
+              role: msg.role === 'ai' ? 'assistant' : 'user',
+              content: textPart?.text || '[图片消息]'
+            };
+          }
+          
+          return {
+            role: msg.role === 'ai' ? 'assistant' : 'user',
+            content: msg.content
+          };
+        }).concat({
+          role: 'user',
+          content: userContent
+        });
 
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          messages: apiMessages
-        }),
-        signal: abortControllerRef.current.signal
-      });
+        abortControllerRef.current = new AbortController();
 
-      if (!response.ok) {
-        throw new Error('请求失败');
-      }
+        const response = await fetch('/api/chat', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            messages: apiMessages
+          }),
+          signal: abortControllerRef.current.signal
+        });
 
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
+        if (!response.ok) {
+          throw new Error('请求失败');
+        }
 
-      if (!reader) {
-        throw new Error('无法读取响应流');
-      }
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
 
-      let fullContent = '';
-      let hasStarted = false;
+        if (!reader) {
+          throw new Error('无法读取响应流');
+        }
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+        let fullContent = '';
+        let hasStarted = false;
 
-        const chunk = decoder.decode(value);
-        const lines = chunk.split('\n');
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
 
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6).trim();
-            
-            if (data === '[DONE]') {
-              break;
-            }
+          const chunk = decoder.decode(value);
+          const lines = chunk.split('\n');
 
-            try {
-              const parsed = JSON.parse(data);
-              const content = parsed.choices?.[0]?.delta?.content || '';
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const data = line.slice(6).trim();
               
-              if (content) {
-                if (!hasStarted) {
-                  if (hasFiles) {
-                    setMessages(prev => 
-                      prev.map(msg => 
-                        msg.id === aiMessageId 
-                          ? { ...msg, content: content }
-                          : msg
-                      )
-                    );
-                  } else {
-                    const aiMessage: Message = {
-                      id: aiMessageId,
-                      role: 'ai',
-                      content: content,
-                      timestamp: Date.now()
-                    };
-                    setMessages(prev => [...prev, aiMessage]);
-                  }
-                  hasStarted = true;
-                }
-                
-                fullContent += content;
-                
-                setMessages(prev => 
-                  prev.map(msg => 
-                    msg.id === aiMessageId 
-                      ? { ...msg, content: fullContent }
-                      : msg
-                  )
-                );
+              if (data === '[DONE]') {
+                break;
               }
-            } catch {
-              // 跳过无法解析的行
+
+              try {
+                const parsed = JSON.parse(data);
+                const content = parsed.choices?.[0]?.delta?.content || '';
+                
+                if (content) {
+                  if (!hasStarted) {
+                    if (hasFiles) {
+                      setMessages(prev => 
+                        prev.map(msg => 
+                          msg.id === aiMessageId 
+                            ? { ...msg, content: content }
+                            : msg
+                        )
+                      );
+                    } else {
+                      const aiMessage: Message = {
+                        id: aiMessageId,
+                        role: 'ai',
+                        content: content,
+                        timestamp: Date.now()
+                      };
+                      setMessages(prev => [...prev, aiMessage]);
+                    }
+                    hasStarted = true;
+                  }
+                  
+                  fullContent += content;
+                  
+                  setMessages(prev => 
+                    prev.map(msg => 
+                      msg.id === aiMessageId 
+                        ? { ...msg, content: fullContent }
+                        : msg
+                    )
+                  );
+                }
+              } catch {
+                // 跳过无法解析的行
+              }
             }
           }
         }
-      }
 
-      if (!fullContent) {
-        setMessages(prev => 
-          prev.map(msg => 
-            msg.id === aiMessageId 
-              ? { ...msg, content: '抱歉，我无法生成回复。' }
-              : msg
-          )
-        );
-      } else {
-        const { cleanContent, options } = extractOptions(fullContent);
-        
-        if (options.length === 3) {
+        if (!fullContent) {
           setMessages(prev => 
             prev.map(msg => 
               msg.id === aiMessageId 
-                ? { ...msg, content: cleanContent }
+                ? { ...msg, content: '抱歉，我无法生成回复。' }
                 : msg
             )
           );
-          setSuggestedOptions(options);
-          setOptionMessageId(aiMessageId);
-                }
-      }
+          break;
+        } else {
+          const { cleanContent, options } = extractOptions(fullContent);
+          
+          if (options.length === 3) {
+            hasValidOptions = true;
+            setMessages(prev => 
+              prev.map(msg => 
+                msg.id === aiMessageId 
+                  ? { ...msg, content: cleanContent }
+                  : msg
+              )
+            );
+            setSuggestedOptions(options);
+            setOptionMessageId(aiMessageId);
+          } else {
+            // 👇 没有有效选项，准备重试
+            retryCount++;
+            console.log(`选项提取失败，重试第 ${retryCount} 次...`);
+            
+            if (retryCount < maxRetries) {
+              setMessages(prev => 
+                prev.map(msg => 
+                  msg.id === aiMessageId 
+                    ? { ...msg, content: `${cleanContent}\n\n🔄 正在重新生成选项... (${retryCount}/${maxRetries})` }
+                    : msg
+                )
+              );
+              
+              await new Promise(resolve => setTimeout(resolve, 500));
+            } else {
+              // 达到最大重试次数，使用备用选项
+              console.log('达到最大重试次数，使用备用选项');
+              setMessages(prev => 
+                prev.map(msg => 
+                  msg.id === aiMessageId 
+                    ? { ...msg, content: cleanContent }
+                    : msg
+                )
+              );
+              const backupOptions = generateRandomFallbackOptions();
+              setSuggestedOptions(backupOptions);
+              setOptionMessageId(aiMessageId);
+              hasValidOptions = true;
+            }
+          }
+        }
 
-    } catch (error: unknown) {
-      if (error instanceof Error && error.name === 'AbortError') {
-        console.log('生成已停止');
-      } else {
-        console.error('请求错误:', error);
-        setMessages(prev => 
-          prev.map(msg => 
-            msg.id === aiMessageId 
-              ? { ...msg, content: '抱歉，连接服务器失败，请稍后再试。' }
-              : msg
-          )
-        );
+      } catch (error: unknown) {
+        if (error instanceof Error && error.name === 'AbortError') {
+          console.log('生成已停止');
+          break;
+        } else {
+          console.error('请求错误:', error);
+          
+          retryCount++;
+          if (retryCount < maxRetries) {
+            console.log(`请求失败，重试第 ${retryCount} 次...`);
+            setMessages(prev => 
+              prev.map(msg => 
+                msg.id === aiMessageId 
+                  ? { ...msg, content: `⚠️ 请求失败，正在重试... (${retryCount}/${maxRetries})` }
+                  : msg
+              )
+            );
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          } else {
+            setMessages(prev => 
+              prev.map(msg => 
+                msg.id === aiMessageId 
+                  ? { ...msg, content: '抱歉，连接服务器失败，请稍后再试。' }
+                  : msg
+              )
+            );
+            break;
+          }
+        }
       }
-    } finally {
-      setIsGenerating(false);
-      abortControllerRef.current = null;
     }
+
+    setIsGenerating(false);
+    abortControllerRef.current = null;
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -519,7 +623,6 @@ export default function Home() {
     handleSend(option);
   };
 
-  // 👇 处理简单文本中的粗体
   const renderTextWithBold = (text: string) => {
     const parts = text.split(/(\*\*.*?\*\*)/g);
     
@@ -536,13 +639,11 @@ export default function Home() {
     if (typeof content === 'string') {
       const shouldShowOptions = messageId === optionMessageId && suggestedOptions.length === 3;
       
-      // 检查是否包含复杂 Markdown 语法
       const hasComplexMarkdown = content.includes('```') || content.includes('#') || content.includes('- ') || content.includes('* ');
       
       return (
         <div>
           {hasComplexMarkdown ? (
-            // 使用 ReactMarkdown 处理复杂格式
             <ReactMarkdown 
               remarkPlugins={[remarkGfm, remarkMath]}
               rehypePlugins={[rehypeKatex]}
@@ -558,7 +659,6 @@ export default function Home() {
               {content}
             </ReactMarkdown>
           ) : (
-            // 简单文本用自定义函数处理
             <div style={{whiteSpace: 'pre-wrap'}}>
               {renderTextWithBold(content)}
             </div>
@@ -619,6 +719,24 @@ export default function Home() {
       <div className="pointer-events-none absolute -bottom-20 left-1/2 -translate-x-1/2 -z-10 h-[400px] w-[400px] rounded-full bg-pink-200/10 blur-3xl" />
 
       <Snowflakes />
+
+      {/* 粘贴提示 */}
+      {pasteHint && (
+        <div style={{
+          position: 'fixed',
+          top: '20px',
+          right: '20px',
+          background: 'rgba(22, 163, 74, 0.9)',
+          color: 'white',
+          padding: '12px 20px',
+          borderRadius: '12px',
+          zIndex: 1000,
+          animation: 'slideIn 0.3s ease-out',
+          boxShadow: '0 4px 12px rgba(0,0,0,0.2)'
+        }}>
+          {pasteHint}
+        </div>
+      )}
 
       {winterEmojis.map((item) => (
         <div
@@ -758,7 +876,7 @@ export default function Home() {
             
             <textarea
               className="input-box resize-none"
-              placeholder="输入你的消息...🎄"
+              placeholder="输入消息或 Ctrl+V 粘贴图片...🎄"
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               onKeyPress={handleKeyPress}
