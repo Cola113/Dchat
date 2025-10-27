@@ -33,10 +33,11 @@ export async function POST(request: NextRequest) {
     });
 
     return NextResponse.json({ url: blob.url });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('上传错误:', error);
+    const errorMessage = error instanceof Error ? error.message : '上传失败';
     return NextResponse.json({ 
-      error: error?.message || '上传失败' 
+      error: errorMessage
     }, { 
       status: 500 
     });
