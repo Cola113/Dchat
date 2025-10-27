@@ -136,8 +136,8 @@ export default function Home() {
 
       const uploaded = await Promise.all(uploadPromises);
       setUploadedFiles(prev => [...prev, ...uploaded]);
-    } catch (error) {
-      console.error('上传错误:', error);
+    } catch {
+      console.error('上传错误');
       alert('上传失败，请重试');
     } finally {
       setIsUploading(false);
@@ -311,7 +311,7 @@ export default function Home() {
       }
 
     } catch (error: any) {
-      if (error.name === 'AbortError') {
+      if (error?.name === 'AbortError') {
         console.log('生成已停止');
       } else {
         console.error('请求错误:', error);
@@ -425,7 +425,7 @@ export default function Home() {
                     remarkPlugins={[remarkGfm, remarkMath]}
                     rehypePlugins={[rehypeKatex]}
                     components={{
-                      code: ({children}: {children?: React.ReactNode}) => (
+                      code: ({children}) => (
                         <code className="inline-code">
                           {children}
                         </code>
