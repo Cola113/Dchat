@@ -97,8 +97,8 @@ export default function Home() {
     
     const newEmoji: WinterEmoji = {
       id: uid(),
-      x: Math.random() * window.innerWidth,
-      y: Math.random() * window.innerHeight,
+      x: e.clientX,      
+      y: e.clientY,
       emoji: randomEmoji,
       anim: randomAnim,
     };
