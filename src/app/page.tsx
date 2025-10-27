@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
+import Image from 'next/image';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -81,7 +82,7 @@ export default function Home() {
     scrollToBottom();
   }, [messages]);
 
-  const handleEmojiClick = (e: React.MouseEvent) => {
+  const handleEmojiClick = () => {
     const winterEmojiList = [
       '❄️', '⛄', '☃️', '🌨️', '🏔️', '🧊', '❄',
       '🎄', '🎅', '🤶', '🎁', '🎀', '🔔', '🕯️', '⭐', '🌟', '✨', '🦌', '🛷', '🧦', '🎊', '🎉',
@@ -96,8 +97,8 @@ export default function Home() {
     
     const newEmoji: WinterEmoji = {
       id: uid(),
-      x: e.clientX,
-      y: e.clientY,
+      x: Math.random() * window.innerWidth,
+      y: Math.random() * window.innerHeight,
       emoji: randomEmoji,
       anim: randomAnim,
     };
@@ -292,7 +293,7 @@ export default function Home() {
                   )
                 );
               }
-            } catch (e) {
+            } catch {
               // 跳过无法解析的行
             }
           }
@@ -348,12 +349,15 @@ export default function Home() {
           }
           if (item.type === 'image_url' && item.image_url) {
             return (
-              <img 
-                key={index} 
-                src={item.image_url.url} 
-                alt="上传的图片" 
-                className="uploaded-image"
-              />
+              <div key={index} className="uploaded-image-container">
+                <Image
+                  src={item.image_url.url}
+                  alt="上传的图片"
+                  width={200}
+                  height={150}
+                  className="uploaded-image"
+                />
+              </div>
             );
           }
           return null;
@@ -404,7 +408,13 @@ export default function Home() {
             <div key={message.id} className={`message ${message.role}`}>
               <div className="avatar">
                 {message.role === 'ai' ? (
-                  <img src="/robot-santa.png" alt="AI助手" />
+                  <Image
+                    src="/robot-santa.png"
+                    alt="AI助手"
+                    width={40}
+                    height={40}
+                    className="avatar-img"
+                  />
                 ) : (
                   '🎅'
                 )}
@@ -415,17 +425,11 @@ export default function Home() {
                     remarkPlugins={[remarkGfm, remarkMath]}
                     rehypePlugins={[rehypeKatex]}
                     components={{
-                      code: ({node, inline, className, children, ...props}: any) => {
-                        return inline ? (
-                          <code className="inline-code" {...props}>
-                            {children}
-                          </code>
-                        ) : (
-                          <code className="block-code" {...props}>
-                            {children}
-                          </code>
-                        );
-                      }
+                      code: ({children}: {children?: React.ReactNode}) => (
+                        <code className="inline-code">
+                          {children}
+                        </code>
+                      )
                     }}
                   >
                     {message.content}
@@ -465,7 +469,12 @@ export default function Home() {
               <div className="uploaded-files">
                 {uploadedFiles.map((file, index) => (
                   <div key={index} className="file-preview">
-                    <img src={file.url} alt={file.name} />
+                    <Image
+                      src={file.url}
+                      alt={file.name}
+                      width={80}
+                      height={80}
+                    />
                     <button 
                       className="remove-file"
                       onClick={() => removeFile(index)}
