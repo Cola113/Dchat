@@ -87,7 +87,7 @@ export default function Home() {
     try {
       setMessages(prev => prev.map(msg => 
         msg.id === initialMessageId 
-          ? { ...msg, content: '正在准备超级有趣的欢迎语和话题...' } 
+          ? { ...msg, content: '✨ 正在准备超级有趣的话题...' } 
           : msg
       ));
 
