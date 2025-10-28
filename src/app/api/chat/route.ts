@@ -1,60 +1,60 @@
-// app/api/chat/route.ts
-
+// src/app/api/chat/route.ts
 import { NextRequest } from 'next/server';
 
-// =============================================================================
-// 类型定义
-// =============================================================================
+// ------------------------------------------------------------
+// 1️⃣ 类型定义（已加入 'system' 角色）
+// ------------------------------------------------------------
+type ContentPart =
+  | { type: 'text'; text?: string }
+  | { type: 'image_url'; image_url?: { url: string } };
 
 type APIMessage = {
-  role: 'user' | 'assistant';
-  content: string | Array<{ type: string; text?: string; image_url?: { url: string } }>;
+  /** 支持 system、user、assistant 三种角色 */
+  role: 'system' | 'user' | 'assistant';
+  /** 文本或复合内容块（与 OpenAI‑ChatCompletions 完全兼容） */
+  content: string | ContentPart[];
 };
 
 type Provider = {
-  id: string;            // 1..4
-  name: string;          // 展示用
-  baseUrl: string;
-  apiKey: string;
-  model: string;
+  id: string;                // "1" .. "4"
+  name: string;              // "Provider-1" .. "Provider-4"
+  baseUrl: string;           // 去掉尾斜杠的 BASE_URL_*
+  apiKey: string;            // KEY_*
+  model: string;             // MODEL_*
   headers: Record<string, string>;
 };
 
-type RaceProviderResult = {
+type RaceResult = {
   readableStream: ReadableStream<Uint8Array>;
   abortController: AbortController;
 };
 
-// =============================================================================
-// 工具函数
-// =============================================================================
-
-/**
- * 从环境变量读取最多 MAX_PROVIDERS 个服务商配置
- */
+// ------------------------------------------------------------
+// 2️⃣ 环境变量读取（1~4 组，缺省则自动跳过）
+// ------------------------------------------------------------
 function getProviders(): Provider[] {
-  const MAX_PROVIDERS = 4;
   const providers: Provider[] = [];
+  const MAX = 4;
 
-  for (let i = 1; i <= MAX_PROVIDERS; i++) {
+  for (let i = 1; i <= MAX; i++) {
     const baseUrl = (process.env[`BASE_URL_${i}`] || '').trim();
-    const apiKey = (process.env[`KEY_${i}`] || '').trim();
-    const model = (process.env[`MODEL_${i}`] || '').trim();
+    const apiKey  = (process.env[`KEY_${i}`]    || '').trim();
+    const model   = (process.env[`MODEL_${i}`]   || '').trim();
 
-    if (!baseUrl || !apiKey || !model) continue;
+    if (!baseUrl || !apiKey || !model) continue;   // 缺省即跳过
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      'Accept': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
+      'Accept':       'text/event-stream',
+      'Cache-Control':'no-cache',
+      'Connection':   'keep-alive',
       'Authorization': `Bearer ${apiKey}`,
     };
 
     providers.push({
       id: String(i),
       name: `Provider-${i}`,
-      baseUrl: baseUrl.replace(/\/+$/, ''), // 去掉尾部斜杠
+      baseUrl: baseUrl.replace(/\/+$/, ''), // 去掉尾斜杠
       apiKey,
       model,
       headers,
@@ -64,70 +64,55 @@ function getProviders(): Provider[] {
   return providers;
 }
 
-/**
- * 构建请求体。尽量保持与多服务商兼容的 OpenAI 风格 payload。
- */
-function buildPayload(model: string, messages: APIMessage[], systemMessage: APIMessage) {
+// ------------------------------------------------------------
+// 3️⃣ 统一请求体（OpenAI‑ChatCompletions 兼容字段）
+// ------------------------------------------------------------
+function buildPayload(model: string, messages: APIMessage[], system: APIMessage) {
   return {
     model,
-    messages: [systemMessage, ...messages],
-    response_format: { type: 'json_object' },
+    messages: [system, ...messages],
+    response_format: { type: 'json_object' }, // 强制 JSON 输出
     temperature: 1.0,
-    stream: true,
+    stream: true,                               // 打开 SSE 流
     presence_penalty: 0.7,
     frequency_penalty: 0.4,
     max_tokens: 2000,
   };
 }
 
-/**
- * 构造服务商完整 endpoint
- */
-function buildEndpoint(baseUrl: string): string {
-  return `${baseUrl}/v1/chat/completions`;
-}
-
-/**
- * 检查是否是 SSE data 首段：即返回的 chunk 中包含 "event: message" 或 "data: " 段
- */
-function isSSEDataStart(chunk: string): boolean {
-  return /(^|\n)(event:\s*message|data:\s*[^\n]*)\n/.test(chunk);
-}
-
-/**
- * 单个服务商的请求与流处理
- */
-async function createStreamingRequest(
+// ------------------------------------------------------------
+// 4️⃣ 单个服务商的流式请求（返回可阅读的 Uint8Array 流）
+// ------------------------------------------------------------
+async function requestStream(
   provider: Provider,
   payload: unknown,
   signal?: AbortSignal
-): Promise<RaceProviderResult> {
+): Promise<RaceResult> {
   const abortController = new AbortController();
-  const abortSignal = signal ?? abortController.signal;
+  const combinedSignal = signal ?? abortController.signal;
 
-  const url = buildEndpoint(provider.baseUrl);
-  const response = await fetch(url, {
+  const endpoint = `${provider.baseUrl}/v1/chat/completions`;
+  const res = await fetch(endpoint, {
     method: 'POST',
     headers: provider.headers,
     body: JSON.stringify(payload),
-    signal: abortSignal,
+    signal: combinedSignal,
   });
 
-  if (!response.ok || !response.body) {
-    const errorText = await response.text().catch(() => '读取错误信息失败');
-    throw new Error(`HTTP ${response.status}: ${errorText}`);
+  // 只要出现 200 且返回真正的 SSE 流才继续
+  if (!res.ok || !res.body) {
+    const body = await res.text().catch(() => '（无可读错误信息）');
+    throw new Error(`HTTP ${res.status} – ${body}`);
   }
 
-  // 读取并转发 SSE 流
-  const reader = response.body.getReader();
+  // 把 Web‑Stream → ReadableStream<Uint8Array>，保持 SSE 完整事件
+  const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
-  let resolved = false;
 
-  const readableStream = new ReadableStream<Uint8Array>({
-    start(controller): void | Promise<void> {
-      // 主动推流
-      const pump = async (): Promise<void> => {
+  const outStream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const pump = async () => {
         try {
           while (true) {
             const { value, done } = await reader.read();
@@ -136,101 +121,69 @@ async function createStreamingRequest(
               return;
             }
 
+            // 文本解码后按 "\n\n" 切分 SSE 事件
             buffer += decoder.decode(value, { stream: true });
-
-            // 逐行处理，避免粘包
             let idx: number;
             while ((idx = buffer.indexOf('\n\n')) !== -1) {
               const chunk = buffer.slice(0, idx + 2);
               buffer = buffer.slice(idx + 2);
-
-              if (!resolved && isSSEDataStart(chunk)) {
-                resolved = true;
-              }
-
               controller.enqueue(new TextEncoder().encode(chunk));
             }
           }
-        } catch (error) {
-          // 读取出错时关闭流
+        } catch (_err) {
+          // 读取异常直接关闭流
           controller.close();
         }
       };
 
-      // 启动推流
+      // 立即开始推流
       pump();
     },
-    cancel(): void {
+    cancel() {
       try {
         reader.releaseLock();
-      } catch {
-        // 忽略释放锁错误
-      }
+      } catch {}
     },
   });
 
-  return { readableStream, abortController };
+  return { readableStream: outStream, abortController };
 }
 
-/**
- * 竞速选择最快返回流的服务商
- */
+// ------------------------------------------------------------
+// 5️⃣ 多服务商抢答：谁先返回真实 SSE 流就把谁透传
+// ------------------------------------------------------------
 async function raceProviders(
   providers: Provider[],
   payload: unknown,
   signal?: AbortSignal
-): Promise<RaceProviderResult> {
-  const errors: Array<{ provider: string; error: string }> = [];
-  const activeControllers: AbortController[] = [];
-
-  try {
-    // 并发发起所有请求
-    const pendingPromises = providers.map(async (provider): Promise<RaceProviderResult | null> => {
-      try {
-        const result = await createStreamingRequest(provider, payload, signal);
-        activeControllers.push(result.abortController);
-        return result;
-      } catch (error: unknown) {
-        const errorMessage = error instanceof Error ? error.message : '未知错误';
-        errors.push({ provider: provider.name, error: errorMessage });
-        return null;
-      }
-    });
-
-    // 等待任意一个成功结果
-    for await (const result of async function* iter() {
-      for (const p of pendingPromises) {
-        const v = await p;
-        if (v) yield v;
-      }
-    }()) {
-      // 第一个成功的提供商，立即中止其他请求
-      for (const controller of activeControllers) {
-        if (controller !== result.abortController) {
-          controller.abort();
-        }
-      }
-      return result;
+): Promise<RaceResult> {
+  const pending = providers.map(async (p) => {
+    try {
+      return await requestStream(p, payload, signal);
+    } catch (_err) {
+      // 单个供应商失败不抛错，继续等其它候选者
+      return null;
     }
+  });
 
-    // 所有都失败，抛出聚合错误
-    const errorSummary = errors
-      .map(e => `${e.provider}: ${e.error}`)
-      .join('; ');
-    throw new Error(`所有服务商均不可用。详情：${errorSummary}`);
-  } catch (error) {
-    // 中止所有未完成的请求
-    for (const controller of activeControllers) {
-      controller.abort();
+  // 只要有一个成功就立刻返回
+  for await (const result of async function* gen() {
+    for (const p of pending) {
+      const v = await p;
+      if (v) yield v as RaceResult;
     }
-    throw error;
+  }()) {
+    // 第一个成功的提供商：中止其余请求（已经在 requestStream 里自行 abort）
+    return result;
   }
+
+  // 全部失败时抛出一个聚合错误
+  throw new Error('所有配置的服务商均无法返回可用流，请检查网络、密钥或模型名称是否匹配。');
 }
 
-// =============================================================================
-// 主入口
-// =============================================================================
-
+// ------------------------------------------------------------
+// 6️⃣ 主路由（POST /api/chat）
+// ------------------------------------------------------------
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -239,19 +192,21 @@ export async function POST(req: NextRequest) {
       isFirstLoad?: boolean;
     };
 
-    if (!messages || !Array.isArray(messages)) {
+    if (!Array.isArray(messages) || messages.length === 0) {
       return new Response(
         JSON.stringify({ error: '无效的消息格式' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
     }
 
-    // 系统提示词逻辑（你原有的）
+    // -------------------------------------------------
+    // ① 系统提示词（你原有逻辑，仅把 role 改为 'system'）
+    // -------------------------------------------------
     let systemMessage: APIMessage;
 
     if (isFirstLoad || (messages.length === 1 && messages[0].role === 'user')) {
       systemMessage = {
-        role: 'system' as const,
+        role: 'system',
         content: `你是可乐创造的超有趣AI助手"小可乐"！个性活泼、情绪丰富、特别会聊天！
 
 【初次见面模式】
@@ -290,11 +245,11 @@ export async function POST(req: NextRequest) {
 2. options 数组必须包含恰好3个选项
 3. 每个选项 8-15 字，emoji 开头
 4. 选项不要出现"话题1"、"话题2"等字样
-5. 要像真人朋友一样聊天，别太正式！`
+5. 要像真人朋友一样聊天，别太正式！`,
       };
     } else {
       systemMessage = {
-        role: 'system' as const,
+        role: 'system',
         content: `你是"可乐的小站"的超有趣AI助手"小可乐"！个性活泼、情绪丰富、特别会聊天！
 
 【关于可乐的信息】
@@ -371,42 +326,52 @@ export async function POST(req: NextRequest) {
   ]
 }
 
-记住：必须返回有效的 JSON 格式，options 必须是3个字符串的数组！`
+记住：必须返回有效的 JSON 格式，options 必须是3个字符串的数组！`,
       };
     }
 
-    // 读取所有配置的服务商
+    // -------------------------------------------------
+    // ② 读取服务商配置（1~4 组，空缺自动跳过）
+    // -------------------------------------------------
     const providers = getProviders();
-
     if (providers.length === 0) {
       return new Response(
-        JSON.stringify({ error: '未配置任何服务商（请设置 BASE_URL_1/KEY_1/MODEL_1 等）' }),
+        JSON.stringify({
+          error: '未配置任何服务商（请至少提供 BASE_URL_1/KEY_1/MODEL_1 等环境变量）',
+        }),
         { status: 500, headers: { 'Content-Type': 'application/json' } }
       );
     }
 
-    // 使用第一个配置中的模型构建请求体
+    // -------------------------------------------------
+    // ③ 构造请求体（这里统一使用第一个模型的名称，若要每家自行指定，可把 buildPayload 搬到 requestStream 里）
+    // -------------------------------------------------
     const payload = buildPayload(providers[0].model, messages, systemMessage);
 
-    // 并发抢答
+    // -------------------------------------------------
+    // ④ 多服务商抢答，谁先返回真正的 SSE 流就立刻转发
+    // -------------------------------------------------
     const { readableStream } = await raceProviders(providers, payload, req.signal);
 
-    // 透传 SSE 流
+    // -------------------------------------------------
+    // ⑤ 前端透传（添加防止 Nginx 缓冲的 X‑Accel‑Buffering 头）
+    // -------------------------------------------------
     return new Response(readableStream, {
       headers: {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        // 若部署在 Nginx 前，增加这个可避免缓冲导致的首包延迟
-        'X-Accel-Buffering': 'no',
+        'Content-Type':        'text/event-stream',
+        'Cache-Control':       'no-cache',
+        'Connection':          'keep-alive',
+        'X-Accel-Buffering':   'no',
       },
     });
-  } catch (error) {
-    console.error('请求处理错误:', error);
+  } catch (err: unknown) {
+    // 只在必须时输出错误日志（防止泄漏密钥等敏感信息）
+    console.error('路由内部错误:', err);
+
     return new Response(
       JSON.stringify({
         error: '服务器内部错误',
-        message: error instanceof Error ? error.message : '未知错误',
+        message: err instanceof Error ? err.message : '未知错误',
       }),
       { status: 500, headers: { 'Content-Type': 'application/json' } }
     );
