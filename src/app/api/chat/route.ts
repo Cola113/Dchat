@@ -214,16 +214,16 @@ function buildAPIConfigs(): Array<{
   return configs;
 }
 
-// 🔥 并发请求竞速（绝对确保取消）
+// ✅ 修改点1：使用 Promise.any 等待第一个成功的请求
 async function raceAPIRequests(
   configs: Array<{baseUrl: string; key: string; model: string; provider: string}>,
   messages: APIMessage[]
 ): Promise<{body: ReadableStream; provider: string; model: string}> {
   
-  // 🚨 关键：为每个请求创建独立的 AbortController
+  // 为每个请求创建独立的 AbortController
   const abortControllers = configs.map(() => new AbortController());
   
-  // 🚨 关键：为每个请求传递取消信号
+  // 创建所有请求的 Promise 数组
   const requests = configs.map((config, index) => 
     makeAPIRequest(config, messages, abortControllers[index].signal)
       .then(response => ({ 
@@ -232,45 +232,37 @@ async function raceAPIRequests(
         model: config.model, 
         index
       }))
-      .catch(error => ({ 
-        error, 
-        provider: config.provider, 
-        model: config.model, 
-        index
-      }))
   );
 
-  // 🚨 等待最快完成的请求
-  const result = await Promise.race(requests);
-  
-  // 🚨 立即取消所有其他请求（不论成功还是失败）
-  console.log(`🚀 确定胜出者: ${result.provider} (${result.model})，立即取消其他请求！`);
-  
-  abortControllers.forEach((controller, index) => {
-    if (index !== result.index) {
-      console.log(`❌ 取消请求 ${configs[index].provider} (${configs[index].model})`);
-      controller.abort();
+  try {
+    // ✅ 修改点2：Promise.any 会自动等待第一个成功的 Promise，忽略失败的
+    const result = await Promise.any(requests);
+    
+    console.log(`🏆 最终胜出: ${result.provider} (模型: ${result.model})`);
+    
+    // ✅ 修改点3：只在成功后取消其他请求
+    abortControllers.forEach((controller, index) => {
+      if (index !== result.index) {
+        console.log(`❌ 取消请求 ${configs[index].provider} (${configs[index].model})`);
+        controller.abort();
+      }
+    });
+    
+    return {
+      body: result.response.body!,
+      provider: result.provider,
+      model: result.model
+    };
+  } catch (error) {
+    // ✅ 修改点4：所有请求都失败时的错误处理
+    console.error('❌ 所有服务商请求都失败了');
+    if (error instanceof AggregateError) {
+      error.errors.forEach((err, index) => {
+        console.error(`  - ${configs[index]?.provider}: ${err.message}`);
+      });
     }
-  });
-  
-  if ('error' in result) {
-    console.warn(`❌ 胜出者失败: ${result.provider} (${result.model}):`, result.error);
-    const remainingConfigs = configs.filter((_, index) => index !== result.index);
-    if (remainingConfigs.length === 0) {
-      throw new Error('所有服务商请求都失败了');
-    }
-    // 🔄 递归调用继续竞速
-    return raceAPIRequests(remainingConfigs, messages);
+    throw new Error('所有服务商请求都失败了');
   }
-
-  // ✅ 成功情况
-  console.log(`🏆 最终胜出: ${result.provider} (模型: ${result.model})`);
-  
-  return {
-    body: result.response.body!,
-    provider: result.provider,
-    model: result.model
-  };
 }
 
 // 🔥 发起单个 API 请求（必须支持取消）
@@ -279,29 +271,46 @@ async function makeAPIRequest(
   messages: APIMessage[],
   signal?: AbortSignal
 ): Promise<Response> {
-  const response = await fetch(`${config.baseUrl}/v1/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${config.key}`,
-    },
-    body: JSON.stringify({
-      model: config.model,
-      messages,
-      response_format: { type: 'json_object' },
-      temperature: 1.0,
-      stream: true,
-      presence_penalty: 0.7,
-      frequency_penalty: 0.4,
-      max_tokens: 128000,
-    }),
-    signal: signal  // 🚨 必须传递取消信号
-  });
+  console.log(`🚀 开始请求 ${config.provider} (${config.model})`);
+  
+  try {
+    const response = await fetch(`${config.baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${config.key}`,
+      },
+      body: JSON.stringify({
+        model: config.model,
+        messages,
+        response_format: { type: 'json_object' },
+        temperature: 1.0,
+        stream: true,
+        presence_penalty: 0.7,
+        frequency_penalty: 0.4,
+        max_tokens: 128000,
+      }),
+      signal: signal  // 🚨 必须传递取消信号
+    });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`${config.provider} (${config.model}) API 错误: ${response.status} ${errorText}`);
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`❌ ${config.provider} HTTP ${response.status}:`, errorText);
+      throw new Error(`${config.provider} (${config.model}) API 错误: ${response.status} ${errorText}`);
+    }
+
+    console.log(`✅ ${config.provider} 响应成功`);
+    return response;
+  } catch (error) {
+    // ✅ 修改点5：增强错误日志
+    if (error instanceof Error) {
+      if (error.name === 'AbortError') {
+        console.log(`⏸️  ${config.provider} 请求被取消（正常行为）`);
+      } else {
+        console.error(`❌ ${config.provider} 请求失败:`, error.message);
+      }
+    }
+    throw error;
   }
-
-  return response;
 }
+
