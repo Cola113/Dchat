@@ -72,7 +72,8 @@ function buildPayload(model: string, messages: APIMessage[], system: APIMessage)
   return {
     model,
     messages: [system, ...messages],
-    response_format: { type: 'json_object' }, 
+    // ❌ 删除强制 JSON 格式（允许流式输出）
+    // response_format: { type: 'json_object' }, 
     temperature: 1.0,
     stream: true,                               // 打开 SSE 流
     presence_penalty: 0.7,
@@ -82,7 +83,7 @@ function buildPayload(model: string, messages: APIMessage[], system: APIMessage)
 }
 
 // ------------------------------------------------------------
-// 4️⃣ 单个服务商的流式请求（✅ 修复：在这里构造 payload）
+// 4️⃣ 单个服务商的流式请求
 // ------------------------------------------------------------
 async function requestStream(
   provider: Provider,
@@ -93,9 +94,7 @@ async function requestStream(
   const abortController = new AbortController();
   const combinedSignal = signal ?? abortController.signal;
 
-  // ✅ 关键修复：使用当前服务商自己的模型名称
   const payload = buildPayload(provider.model, messages, system);
-
   const endpoint = `${provider.baseUrl}/v1/chat/completions`;
   
   try {
@@ -106,15 +105,13 @@ async function requestStream(
       signal: combinedSignal,
     });
 
-    // 只要出现 200 且返回真正的 SSE 流才继续
     if (!res.ok || !res.body) {
       const body = await res.text().catch(() => '（无可读错误信息）');
       throw new Error(`[${provider.name}] HTTP ${res.status} – ${body}`);
     }
 
-    // 把 Web‑Stream → ReadableStream<Uint8Array>，保持 SSE 完整事件
     const reader = res.body.getReader();
-    const decoder = new TextDecoder('utf-8', { fatal: false }); // ✅ 容错模式
+    const decoder = new TextDecoder('utf-8', { fatal: false });
     let buffer = '';
 
     const outStream = new ReadableStream<Uint8Array>({
@@ -124,7 +121,6 @@ async function requestStream(
             while (true) {
               const { value, done } = await reader.read();
               if (done) {
-                // ✅ 处理 buffer 中剩余数据
                 if (buffer.trim()) {
                   controller.enqueue(new TextEncoder().encode(buffer + '\n\n'));
                 }
@@ -132,7 +128,6 @@ async function requestStream(
                 return;
               }
 
-              // 文本解码后按 "\n\n" 切分 SSE 事件
               buffer += decoder.decode(value, { stream: true });
               let idx: number;
               while ((idx = buffer.indexOf('\n\n')) !== -1) {
@@ -142,13 +137,11 @@ async function requestStream(
               }
             }
           } catch (err) {
-            // 读取异常直接关闭流
             console.error(`[${provider.name}] 流读取错误:`, err);
             controller.close();
           }
         };
 
-        // 立即开始推流
         pump();
       },
       cancel() {
@@ -164,14 +157,13 @@ async function requestStream(
       providerName: provider.name 
     };
   } catch (err) {
-    // ✅ 增强错误日志
     console.error(`[${provider.name}] 请求失败:`, err instanceof Error ? err.message : err);
     throw err;
   }
 }
 
 // ------------------------------------------------------------
-// 5️⃣ 多服务商抢答（✅ 修复：传递原始参数而非 payload）
+// 5️⃣ 多服务商抢答
 // ------------------------------------------------------------
 async function raceProviders(
   providers: Provider[],
@@ -183,16 +175,13 @@ async function raceProviders(
 
   const pending = providers.map(async (p) => {
     try {
-      // ✅ 传递原始数据，让 requestStream 内部构造 payload
       return await requestStream(p, messages, system, signal);
     } catch (err) {
-      // 单个供应商失败不抛错，继续等其它候选者
       console.warn(`[${p.name}] 竞速失败，尝试下一个服务商`);
       return null;
     }
   });
 
-  // 只要有一个成功就立刻返回
   for await (const result of async function* gen() {
     for (const p of pending) {
       const v = await p;
@@ -200,11 +189,9 @@ async function raceProviders(
     }
   }()) {
     console.log(`✅ [${result.providerName}] 竞速获胜！`);
-    // 第一个成功的提供商：中止其余请求
     return result;
   }
 
-  // 全部失败时抛出一个聚合错误
   throw new Error('所有配置的服务商均无法返回可用流，请检查网络、密钥或模型名称是否匹配。');
 }
 
@@ -227,7 +214,7 @@ export async function POST(req: NextRequest) {
     }
 
     // -------------------------------------------------
-    // ① 系统提示词（✅ 修复：确保所有emoji正确显示）
+    // ① 系统提示词（✅ 强化 JSON 格式要求）
     // -------------------------------------------------
     let systemMessage: APIMessage;
 
@@ -246,26 +233,19 @@ export async function POST(req: NextRequest) {
 - 语气活泼：多用"吧"、"呢"、"哦"、"呀"、"啦"等语气词
 - 亲切友好：像朋友聊天一样自然随性
 
-【严格的 JSON 输出格式】
-你必须返回以下 JSON 格式，不要有任何其他文本：
-{
-  "reply": "你的两句有趣问候语，使用丰富的emoji和口语风格",
-  "options": [
-    "🧁 话题1（8-15字，emoji开头，有趣吸引人）",
-    "🎮 话题2（8-15字，emoji开头，完全不同领域）",
-    "🪐 话题3（8-15字，emoji开头，出人意料的角度）"
-  ]
-}
+⚠️ 【极其重要的输出格式要求】⚠️
+你必须严格按照以下 JSON 格式输出，绝对不能有任何其他文本：
 
-【示例】
-{
-  "reply": "哎呀呀！欢迎来到我的魔法聊天屋～🎄✨ 我可是世界上最会聊天又萌萌哒的助手呢！😄💖",
-  "options": [
-    "🧁 给我编一首甜甜圈口味的小诗吧",
-    "🎮 玩一次猜数字小游戏好不好",
-    "🪐 如果地球是颗糖果会怎么样捏"
-  ]
-}
+{"reply":"你的两句有趣问候语，使用丰富的emoji和口语风格","options":["🧁 话题1（8-15字，emoji开头）","🎮 话题2（8-15字，emoji开头）","🪐 话题3（8-15字，emoji开头）"]}
+
+🚫 禁止事项：
+- 禁止在 JSON 前后添加任何解释文字
+- 禁止使用 markdown 代码块包裹 JSON
+- 禁止输出 "好的，这是回复：" 等前缀
+- 第一个字符必须是 {，最后一个字符必须是 }
+
+✅ 正确示例：
+{"reply":"哎呀呀！欢迎来到我的魔法聊天屋～🎄✨ 我可是世界上最会聊天又萌萌哒的助手呢！😄💖","options":["🧁 给我编一首甜甜圈口味的小诗吧","🎮 玩一次猜数字小游戏好不好","🪐 如果地球是颗糖果会怎么样捏"]}
 
 记住：
 1. 必须返回有效的 JSON 格式
@@ -312,16 +292,16 @@ export async function POST(req: NextRequest) {
 - 语气词：吧、呢、哦、呀、啦、嘛、哩、咯
 - 像朋友一样自然聊天，不要太正式
 
-【严格的 JSON 输出格式】
-你必须返回以下 JSON 格式，不要有任何其他文本：
-{
-  "reply": "你的简短回复（1-3句话，带emoji和语气词）",
-  "options": [
-    "用户可能想说的话1（10-20字，第一人称）",
-    "用户可能想说的话2（10-20字，完全不同角度）",
-    "用户可能想说的话3（10-20字，轻松或有趣的方向）"
-  ]
-}
+⚠️ 【极其重要的输出格式要求】⚠️
+你必须严格按照以下 JSON 格式输出，绝对不能有任何其他文本：
+
+{"reply":"你的简短回复（1-3句话，带emoji和语气词）","options":["用户可能想说的话1（10-20字，第一人称）","用户可能想说的话2（10-20字，完全不同角度）","用户可能想说的话3（10-20字，轻松或有趣的方向）"]}
+
+🚫 禁止事项：
+- 禁止在 JSON 前后添加任何解释文字
+- 禁止使用 markdown 代码块包裹 JSON
+- 禁止输出 "好的，这是回复：" 等前缀
+- 第一个字符必须是 {，最后一个字符必须是 }
 
 【关键规则】
 1. 选项是"用户可能说的话"，不是"AI建议的话题"
@@ -330,35 +310,17 @@ export async function POST(req: NextRequest) {
 4. 绝对不能出现"选项1""选项2"等字样
 5. options 数组必须包含恰好3个选项
 
-【示例】
+✅ 正确示例：
 用户说："最近好累啊"
 返回：
-{
-  "reply": "哎呀呀！抱抱你！😢💕 工作太辛苦了吗？",
-  "options": [
-    "😮‍💨 工作压力太大了，都没时间休息",
-    "😊 其实也还好，就是想抱怨一下哈哈",
-    "✨ 别说这个啦，聊点开心的！"
-  ]
-}
-
-用户说："AI是怎么工作的？"
-返回：
-{
-  "reply": "哇塞！这个问题好棒！🤖✨ 简单说就是通过大量数据学习模式呢～",
-  "options": [
-    "🤔 能用更简单的例子解释一下吗？",
-    "🤖 那AI将来会比人类聪明吗？",
-    "🎨 换个话题，聊聊艺术吧！"
-  ]
-}
+{"reply":"哎呀呀！抱抱你！😢💕 工作太辛苦了吗？","options":["😮‍💨 工作压力太大了，都没时间休息","😊 其实也还好，就是想抱怨一下哈哈","✨ 别说这个啦，聊点开心的！"]}
 
 记住：必须返回有效的 JSON 格式，options 必须是3个字符串的数组！`,
       };
     }
 
     // -------------------------------------------------
-    // ② 读取服务商配置（1~4 组，空缺自动跳过）
+    // ② 读取服务商配置
     // -------------------------------------------------
     const providers = getProviders();
     if (providers.length === 0) {
@@ -375,7 +337,7 @@ export async function POST(req: NextRequest) {
     );
 
     // -------------------------------------------------
-    // ③ 多服务商抢答（✅ 修复：传递原始数据而非 payload）
+    // ③ 多服务商抢答
     // -------------------------------------------------
     const { readableStream, providerName } = await raceProviders(
       providers, 
@@ -385,7 +347,7 @@ export async function POST(req: NextRequest) {
     );
 
     // -------------------------------------------------
-    // ④ 前端透传（添加防止 Nginx 缓冲的 X‑Accel‑Buffering 头）
+    // ④ 前端透传
     // -------------------------------------------------
     console.log(`🚀 开始流式传输 (${providerName})`);
 
@@ -395,11 +357,10 @@ export async function POST(req: NextRequest) {
         'Cache-Control':       'no-cache',
         'Connection':          'keep-alive',
         'X-Accel-Buffering':   'no',
-        'X-Provider-Used':     providerName,  // ✅ 可选：告知前端使用了哪个服务商
+        'X-Provider-Used':     providerName,
       },
     });
   } catch (err: unknown) {
-    // 只在必须时输出错误日志（防止泄漏密钥等敏感信息）
     console.error('路由内部错误:', err);
 
     return new Response(
@@ -411,5 +372,3 @@ export async function POST(req: NextRequest) {
     );
   }
 }
-
-
