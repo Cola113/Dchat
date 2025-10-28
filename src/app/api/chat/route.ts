@@ -1,8 +1,8 @@
 import { NextRequest } from 'next/server';
 
-// 定义 API 消息类型
+// 定义 API 消息类型（包含 system）
 type APIMessage = {
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'system';  // 🔥 添加 'system'
   content: string | Array<{type: string; text?: string; image_url?: {url: string}}>;
 };
 
