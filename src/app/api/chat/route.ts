@@ -72,7 +72,7 @@ function buildPayload(model: string, messages: APIMessage[], system: APIMessage)
   return {
     model,
     messages: [system, ...messages],
-    //response_format: { type: 'json_object' }, 
+    response_format: { type: 'json_object' }, 
     temperature: 1.0,
     stream: true,                               // 打开 SSE 流
     presence_penalty: 0.7,
@@ -411,4 +411,5 @@ export async function POST(req: NextRequest) {
     );
   }
 }
+
 
