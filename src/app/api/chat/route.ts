@@ -74,7 +74,7 @@ function buildPayload(model: string, messages: APIMessage[], system: APIMessage)
     messages: [system, ...messages],
     temperature: 1.3,
     stream: true,                               // 打开 SSE 流
-    response_format: { type: "json_object" },
+    //response_format: { type: "json_object" },
     presence_penalty: 0.7,
     frequency_penalty: 0.4,
     max_tokens: 32000,
@@ -371,4 +371,5 @@ export async function POST(req: NextRequest) {
     );
   }
 }
+
 
