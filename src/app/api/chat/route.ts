@@ -15,9 +15,14 @@ type Provider = {
   id: string;            // 1..4
   name: string;          // 展示用
   baseUrl: string;
-  apiKey?: string;
+  apiKey: string;
   model: string;
   headers: Record<string, string>;
+};
+
+type RaceProviderResult = {
+  readableStream: ReadableStream<Uint8Array>;
+  abortController: AbortController;
 };
 
 // =============================================================================
@@ -78,143 +83,148 @@ function buildPayload(model: string, messages: APIMessage[], systemMessage: APIM
 /**
  * 构造服务商完整 endpoint
  */
-function buildEndpoint(baseUrl: string) {
+function buildEndpoint(baseUrl: string): string {
   return `${baseUrl}/v1/chat/completions`;
 }
 
 /**
  * 检查是否是 SSE data 首段：即返回的 chunk 中包含 "event: message" 或 "data: " 段
  */
-function isSSEDataStart(chunk: string) {
+function isSSEDataStart(chunk: string): boolean {
   return /(^|\n)(event:\s*message|data:\s*[^\n]*)\n/.test(chunk);
 }
 
 /**
- * 读取首个成功流（200 + SSE 数据），返回 { stream, controller }；
- * 其中 controller 可用来中止其它正在进行的请求。
+ * 单个服务商的请求与流处理
+ */
+async function createStreamingRequest(
+  provider: Provider,
+  payload: unknown,
+  signal?: AbortSignal
+): Promise<RaceProviderResult> {
+  const abortController = new AbortController();
+  const abortSignal = signal ?? abortController.signal;
+
+  const url = buildEndpoint(provider.baseUrl);
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: provider.headers,
+    body: JSON.stringify(payload),
+    signal: abortSignal,
+  });
+
+  if (!response.ok || !response.body) {
+    const errorText = await response.text().catch(() => '读取错误信息失败');
+    throw new Error(`HTTP ${response.status}: ${errorText}`);
+  }
+
+  // 读取并转发 SSE 流
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let resolved = false;
+
+  const readableStream = new ReadableStream<Uint8Array>({
+    start(controller): void | Promise<void> {
+      // 主动推流
+      const pump = async (): Promise<void> => {
+        try {
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) {
+              controller.close();
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+
+            // 逐行处理，避免粘包
+            let idx: number;
+            while ((idx = buffer.indexOf('\n\n')) !== -1) {
+              const chunk = buffer.slice(0, idx + 2);
+              buffer = buffer.slice(idx + 2);
+
+              if (!resolved && isSSEDataStart(chunk)) {
+                resolved = true;
+              }
+
+              controller.enqueue(new TextEncoder().encode(chunk));
+            }
+          }
+        } catch (error) {
+          // 读取出错时关闭流
+          controller.close();
+        }
+      };
+
+      // 启动推流
+      pump();
+    },
+    cancel(): void {
+      try {
+        reader.releaseLock();
+      } catch {
+        // 忽略释放锁错误
+      }
+    },
+  });
+
+  return { readableStream, abortController };
+}
+
+/**
+ * 竞速选择最快返回流的服务商
  */
 async function raceProviders(
   providers: Provider[],
   payload: unknown,
   signal?: AbortSignal
-): Promise<{ stream: ReadableStream<Uint8Array>; controller: AbortController }> {
-  const controller = new AbortController();
-  const sharedSignal = signal ?? controller.signal;
+): Promise<RaceProviderResult> {
+  const errors: Array<{ provider: string; error: string }> = [];
+  const activeControllers: AbortController[] = [];
 
-  // 将每个候选转为 Promise<ReadableStream>
-  const promises = providers.map(async (p) => {
-    const url = buildEndpoint(p.baseUrl);
-
-    try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: p.headers,
-        body: JSON.stringify(payload),
-        signal: sharedSignal,
-      });
-
-      if (!res.ok || !res.body) {
-        return null; // 非流或失败，跳过
+  try {
+    // 并发发起所有请求
+    const pendingPromises = providers.map(async (provider): Promise<RaceProviderResult | null> => {
+      try {
+        const result = await createStreamingRequest(provider, payload, signal);
+        activeControllers.push(result.abortController);
+        return result;
+      } catch (error: unknown) {
+        const errorMessage = error instanceof Error ? error.message : '未知错误';
+        errors.push({ provider: provider.name, error: errorMessage });
+        return null;
       }
+    });
 
-      // 等待真正的 SSE 数据到来后再 resolve，避免过早透传 200 但没数据的流
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let resolved = false;
-
-      // 一旦上层选择该流，立刻取消其它请求
-      const cancelOthers = () => controller.abort();
-
-      // 将 Web ReadableStream 转为可中止的 Transform 流（自管理控制）
-      const ts = new TransformStream<Uint8Array, Uint8Array>({
-        start: async (controller) => {
-          try {
-            while (true) {
-              const { value, done } = await reader.read();
-              if (done) {
-                controller.terminate();
-                break;
-              }
-              buffer += decoder.decode(value, { stream: true });
-
-              // 逐行处理，避免粘包
-              let idx: number;
-              while ((idx = buffer.indexOf('\n\n')) !== -1) {
-                const chunk = buffer.slice(0, idx + 2);
-                buffer = buffer.slice(idx + 2);
-
-                if (!resolved && isSSEDataStart(chunk)) {
-                  // 首段数据到来，立即选中该流并中止其他候选
-                  resolved = true;
-                  cancelOthers();
-                }
-
-                controller.enqueue(new TextEncoder().encode(chunk));
-              }
-            }
-          } catch (err) {
-            // 忽略具体错误，继续等待其它候选；上層会关闭 transform
-          } finally {
-            try {
-              reader.releaseLock();
-            } catch {}
-          }
-        },
-      });
-
-      const webStream = res.body;
-      // 将原始 webStream 接入我们的 TransformStream
-      // 注意：无需再等待 res.body 完整读取，这里只是接入管道
-      webStream.pipeThrough(ts);
-
-      // 等待真正的 SSE 数据到来才 resolve
-      // 这里采用一种简单方式：在 TransformStream 内部通过 cancelOthers 标记 resolved，
-      // 但我们仍然需要在此等待首段数据后 resolve。
-      await new Promise<void>((resolveStream) => {
-        const timer = setInterval(() => {
-          // 每 50ms 检查一次 resolved 标记
-          if ((ts as any).__resolved) {
-            clearInterval(timer);
-            resolveStream();
-          }
-        }, 50);
-
-        // 包装 resolved 标记读写，避免 ts 内部状态外泄
-        Object.defineProperty(ts, '__resolved', {
-          configurable: false,
-          enumerable: false,
-          get: () => (ts as any).__r === true,
-          set: (v: boolean) => ((ts as any).__r = v),
-        });
-
-        // 在读取到首段 SSE data 时设置 __resolved = true
-        const origController = (ts as any)._controller || (ts as any).controller || null;
-        // 由于 TransformStream 的 controller 在 start 中，我们采用上面的闭包已实现 resolved 逻辑
-        // 这里不再改动
-      }).catch(() => null);
-
-      // 返回可透传的流
-      return ts.readable;
-    } catch (_err) {
-      // 请求失败或不可用
-      return null;
+    // 等待任意一个成功结果
+    for await (const result of async function* iter() {
+      for (const p of pendingPromises) {
+        const v = await p;
+        if (v) yield v;
+      }
+    }()) {
+      // 第一个成功的提供商，立即中止其他请求
+      for (const controller of activeControllers) {
+        if (controller !== result.abortController) {
+          controller.abort();
+        }
+      }
+      return result;
     }
-  });
 
-  // 等待任意一个成功可用的流
-  for await (const stream of async function* gen() {
-    for (const p of promises) {
-      const v = await p;
-      if (v) yield v as ReadableStream<Uint8Array>;
+    // 所有都失败，抛出聚合错误
+    const errorSummary = errors
+      .map(e => `${e.provider}: ${e.error}`)
+      .join('; ');
+    throw new Error(`所有服务商均不可用。详情：${errorSummary}`);
+  } catch (error) {
+    // 中止所有未完成的请求
+    for (const controller of activeControllers) {
+      controller.abort();
     }
-  }()) {
-    // 第一个可用流
-    return { stream, controller };
+    throw error;
   }
-
-  // 所有候选都不可用
-  throw new Error('所有配置的服务商均无法返回可用流');
 }
 
 // =============================================================================
@@ -375,16 +385,14 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 请求体
-    // 这里假设只用第一个服务商 model，实际可以按需扩展每个 Provider 使用各自的 model
-    // 为复用你现有的方式，我们用第一个配置中的 model 作为“主模型”，后续可以按需更灵活
+    // 使用第一个配置中的模型构建请求体
     const payload = buildPayload(providers[0].model, messages, systemMessage);
 
     // 并发抢答
-    const { stream, controller } = await raceProviders(providers, payload, req.signal);
+    const { readableStream } = await raceProviders(providers, payload, req.signal);
 
     // 透传 SSE 流
-    return new Response(stream, {
+    return new Response(readableStream, {
       headers: {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
