@@ -76,49 +76,127 @@ export default function Home() {
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [suggestedOptions, setSuggestedOptions] = useState<string[]>([]);
   const [isLoadingOptions, setIsLoadingOptions] = useState(false);
-  const [pasteHint, setPasteHint] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // 粘贴事件监听
-  useEffect(() => {
-    const handlePaste = async (e: ClipboardEvent) => {
-      const items = e.clipboardData?.items;
-      if (!items) return;
+  // 🔥 优化：提取流式处理公共函数
+  const processStreamResponse = async (
+    reader: ReadableStreamDefaultReader<Uint8Array>,
+    onChunk: (content: string) => void,
+    onComplete: (fullContent: string) => void
+  ) => {
+    const decoder = new TextDecoder();
+    let fullContent = '';
 
-      for (let i = 0; i < items.length; i++) {
-        const item = items[i];
-        
-        if (item.type.indexOf('image') !== -1) {
-          e.preventDefault();
-          
-          const file = item.getAsFile();
-          if (!file) continue;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
 
-          const reader = new FileReader();
-          reader.onload = () => {
-            const result = reader.result as string;
-            
-            setUploadedFiles(prev => [...prev, {
-              name: `截图-${new Date().toLocaleTimeString('zh-CN')}.png`,
-              type: file.type,
-              data: result
-            }]);
-            
-            setPasteHint('✅ 图片已粘贴！');
-            setTimeout(() => setPasteHint(null), 2000);
-          };
+      const chunk = decoder.decode(value);
+      const lines = chunk.split('\n');
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const data = line.slice(6).trim();
           
-          reader.readAsDataURL(file);
+          if (data === '[DONE]') {
+            break;
+          }
+
+          try {
+            const parsed = JSON.parse(data);
+            const content = parsed.choices?.[0]?.delta?.content || '';
+            
+            if (content) {
+              fullContent += content;
+              onChunk(content);
+            }
+          } catch {
+            // 跳过无法解析的行
+          }
         }
       }
-    };
+    }
 
-    document.addEventListener('paste', handlePaste);
-    return () => document.removeEventListener('paste', handlePaste);
-  }, []);
+    onComplete(fullContent);
+  };
+
+  // 🔥 优化：JSON 格式解析（支持流式和完整响应）
+  const parseJSONResponse = (content: string): { reply: string; options: string[] } => {
+    try {
+      // 尝试直接解析完整 JSON
+      const parsed = JSON.parse(content);
+      
+      if (parsed.reply && Array.isArray(parsed.options) && parsed.options.length === 3) {
+        return {
+          reply: parsed.reply,
+          options: parsed.options
+        };
+      }
+    } catch {
+      // JSON 解析失败，尝试提取部分内容
+      const replyMatch = content.match(/"reply"\s*:\s*"([^"]+)"/);
+      const optionsMatch = content.match(/"options"\s*:\s*\[([\s\S]*?)\]/);
+      
+      if (replyMatch && optionsMatch) {
+        try {
+          const reply = replyMatch[1];
+          const optionsStr = optionsMatch[1];
+          const options = optionsStr
+            .split(',')
+            .map(opt => opt.trim().replace(/^"|"$/g, ''))
+            .filter(opt => opt.length > 0)
+            .slice(0, 3);
+          
+          if (options.length === 3) {
+            return { reply, options };
+          }
+        } catch {}
+      }
+    }
+    
+    // 兜底：返回原内容 + 默认选项
+    console.warn('JSON 解析失败，使用兜底选项');
+    return {
+      reply: content,
+      options: [
+        '能详细说说吗？',
+        '换个话题聊聊',
+        '来点有趣的！'
+      ]
+    };
+  };
+
+  // 🔥 优化：构建 API 消息（图片只在最后一条保留）
+  const buildAPIMessages = (allMessages: Message[], newUserContent: string | Array<{type: string; text?: string; image_url?: {url: string}}>): Array<{role: 'user' | 'assistant'; content: string | Array<{type: string; text?: string; image_url?: {url: string}}>>> => {
+    const apiMessages = allMessages.map((msg, index) => {
+      // 如果是历史用户消息且包含图片，转为纯文字描述
+      if (msg.role === 'user' && Array.isArray(msg.content)) {
+        const textPart = msg.content.find(item => item.type === 'text');
+        const imageCount = msg.content.filter(item => item.type === 'image_url').length;
+        
+        return {
+          role: 'user' as const,
+          content: `${textPart?.text || '请分析这些图片'}\n[之前上传了 ${imageCount} 张图片]`
+        };
+      }
+
+      return {
+        role: msg.role === 'ai' ? 'assistant' as const : 'user' as const,
+        content: msg.content
+      };
+    });
+
+    // 添加新消息（保留图片）
+    apiMessages.push({
+      role: 'user',
+      content: newUserContent
+    });
+
+    return apiMessages;
+  };
 
   const fetchInitialOptions = async () => {
     setIsLoadingOptions(true);
@@ -147,59 +225,28 @@ export default function Home() {
       if (!response.ok) throw new Error('获取选项失败');
 
       const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-
       if (!reader) throw new Error('无法读取响应');
 
       let fullContent = '';
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const chunk = decoder.decode(value);
-        const lines = chunk.split('\n');
-
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6).trim();
-            
-            if (data === '[DONE]') {
-              break;
-            }
-
-            try {
-              const parsed = JSON.parse(data);
-              const content = parsed.choices?.[0]?.delta?.content || '';
-              
-              if (content) {
-                fullContent += content;
-              }
-            } catch {
-              // 跳过无法解析的行
-            }
-          }
+      await processStreamResponse(
+        reader,
+        (content) => {
+          fullContent += content;
+        },
+        (finalContent) => {
+          const { reply, options } = parseJSONResponse(finalContent);
+          
+          setMessages(prev => prev.map(msg => 
+            msg.id === initialMessageId 
+              ? { ...msg, content: reply } 
+              : msg
+          ));
+          
+          setSuggestedOptions(options);
+          setOptionMessageId(initialMessageId);
         }
-      }
-
-      const { cleanContent, options } = extractOptions(fullContent);
-      
-      if (cleanContent) {
-        setMessages(prev => prev.map(msg => 
-          msg.id === initialMessageId 
-            ? { ...msg, content: cleanContent } 
-            : msg
-        ));
-      }
-      
-      if (options.length === 3) {
-        setSuggestedOptions(options);
-        setOptionMessageId(initialMessageId);
-      } else {
-        const backupOptions = generateRandomFallbackOptions();
-        setSuggestedOptions(backupOptions);
-        setOptionMessageId(initialMessageId);
-      }
+      );
 
     } catch (error) {
       console.error('获取初始选项失败:', error);
@@ -208,25 +255,15 @@ export default function Home() {
           ? { ...msg, content: '抱歉，欢迎语加载失败了 😢 但你可以随便聊聊哦！' } 
           : msg
       ));
-      const backupOptions = generateRandomFallbackOptions();
-      setSuggestedOptions(backupOptions);
+      setSuggestedOptions([
+        '😄 讲个冷笑话',
+        '🎄 分享圣诞故事',
+        '🥘 推荐美食食谱'
+      ]);
       setOptionMessageId(initialMessageId);
     } finally {
       setIsLoadingOptions(false);
     }
-  };
-
-  const generateRandomFallbackOptions = () => {
-    const optionGroups = [
-      ['😄讲个冷笑话', '🎄分享圣诞故事', '🥘推荐美食食谱'],
-      ['🤖聊聊AI技术', '❓解个谜语吧', '✍️创作首小诗'],
-      ['🎬推荐圣诞电影', '💻聊聊编程', '🚪分享生活小窍门'],
-      ['🎮玩文字游戏', '❕科普小知识', '📚生成随机故事'],
-      ['👨‍🚀聊聊太空', '🎵音乐推荐', '🏥健康小贴士'],
-      ['🎁推荐礼品', '⛰️旅行建议', '🏫语言学习技巧']
-    ];
-    
-    return optionGroups[Math.floor(Math.random() * optionGroups.length)];
   };
 
   useEffect(() => {
@@ -337,26 +374,6 @@ export default function Home() {
     }
   };
 
-  const extractOptions = (content: string): { cleanContent: string; options: string[] } => {
-    const optionRegex = /<<<选项>>>([\s\S]*?)(?:\n\n|<<<|$)/;
-    const match = content.match(optionRegex);
-    
-    if (match) {
-      const optionsText = match[1];
-      const options = optionsText
-        .split('\n')
-        .map(line => line.replace(/^[-•▪︎]\s*/, '').trim())
-        .filter(line => line.length > 0 && line.length < 100)
-        .slice(0, 3);
-      
-      const cleanContent = content.replace(optionRegex, '').trim();
-      
-      return { cleanContent, options: options.length === 3 ? options : [] };
-    }
-    
-    return { cleanContent: content, options: [] };
-  };
-
   const handleSend = async (messageText?: string) => {
     const textToSend = messageText || inputValue.trim();
     
@@ -370,6 +387,7 @@ export default function Home() {
     setSuggestedOptions([]);
     setOptionMessageId(null);
 
+    // 🔥 构造用户消息内容
     let userContent: string | Array<{type: string; text?: string; image_url?: {url: string}}>;
 
     if (uploadedFiles.length > 0) {
@@ -393,11 +411,12 @@ export default function Home() {
 
     setMessages(prev => [...prev, userMessage]);
     setInputValue('');
+    const currentFiles = [...uploadedFiles];
     setUploadedFiles([]);
     setIsGenerating(true);
 
     const aiMessageId = uid();
-    const hasFiles = uploadedFiles.length > 0;
+    const hasFiles = currentFiles.length > 0;
 
     if (hasFiles) {
       const loadingMessage: Message = {
@@ -409,239 +428,127 @@ export default function Home() {
       setMessages(prev => [...prev, loadingMessage]);
     }
 
-    let retryCount = 0;
-    const maxRetries = 3;
-    let hasValidOptions = false;
-    let aiMessageCreated = hasFiles;
+    try {
+      // 🔥 使用优化后的消息构建函数
+      const apiMessages = buildAPIMessages(messages, userContent);
 
-    while (!hasValidOptions && retryCount < maxRetries) {
-      try {
-        const apiMessages: Array<{ role: string; content: string | Array<{type: string; text?: string; image_url?: {url: string}}> }> = messages.map(msg => {
-          if (Array.isArray(msg.content)) {
-            const textPart = msg.content.find(item => item.type === 'text');
-            return {
-              role: msg.role === 'ai' ? 'assistant' : 'user',
-              content: textPart?.text || '[图片消息]'
-            };
+      abortControllerRef.current = new AbortController();
+
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          messages: apiMessages
+        }),
+        signal: abortControllerRef.current.signal
+      });
+
+      if (!response.ok) {
+        throw new Error('请求失败');
+      }
+
+      const reader = response.body?.getReader();
+
+      if (!reader) {
+        throw new Error('无法读取响应流');
+      }
+
+      let fullContent = '';
+      let hasStarted = false;
+
+      await processStreamResponse(
+        reader,
+        (content) => {
+          if (!hasStarted) {
+            if (hasFiles) {
+              setMessages(prev => 
+                prev.map(msg => 
+                  msg.id === aiMessageId 
+                    ? { ...msg, content: content }
+                    : msg
+                )
+              );
+            } else {
+              const aiMessage: Message = {
+                id: aiMessageId,
+                role: 'ai',
+                content: content,
+                timestamp: Date.now()
+              };
+              setMessages(prev => [...prev, aiMessage]);
+            }
+            hasStarted = true;
           }
           
-          return {
-            role: msg.role === 'ai' ? 'assistant' : 'user',
-            content: typeof msg.content === 'string' ? msg.content : '[未知消息]'
-          };
-        });
-
-        // 👇 关键修改：每次都添加提示
-        let enhancedContent: string | Array<{type: string; text?: string; image_url?: {url: string}}>;
-        
-        if (Array.isArray(userContent)) {
-          // 图片消息：在文本部分添加提示
-          enhancedContent = userContent.map((item, index) => {
-            if (index === 0 && item.type === 'text') {
-              return {
-                ...item,
-                text: `${item.text}\n\n[系统提示：请务必在回复文末按照格式生成3个选项]`
-              };
-            }
-            return item;
-          });
-        } else {
-          // 文本消息：直接在文末添加提示
-          enhancedContent = `${userContent}\n\n[系统提示：请务必在回复文末按照格式生成3个选项]`;
-        }
-        
-        apiMessages.push({
-          role: 'user',
-          content: enhancedContent
-        });
-
-        abortControllerRef.current = new AbortController();
-
-        const response = await fetch('/api/chat', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            messages: apiMessages
-          }),
-          signal: abortControllerRef.current.signal
-        });
-
-        if (!response.ok) {
-          throw new Error('请求失败');
-        }
-
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-
-        if (!reader) {
-          throw new Error('无法读取响应流');
-        }
-
-        let fullContent = '';
-        let hasStarted = false;
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          const chunk = decoder.decode(value);
-          const lines = chunk.split('\n');
-
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              const data = line.slice(6).trim();
-              
-              if (data === '[DONE]') {
-                break;
-              }
-
-              try {
-                const parsed = JSON.parse(data);
-                const content = parsed.choices?.[0]?.delta?.content || '';
-                
-                if (content) {
-                  if (!hasStarted) {
-                    if (!aiMessageCreated) {
-                      const aiMessage: Message = {
-                        id: aiMessageId,
-                        role: 'ai',
-                        content: content,
-                        timestamp: Date.now()
-                      };
-                      setMessages(prev => [...prev, aiMessage]);
-                      aiMessageCreated = true;
-                    } else {
-                      setMessages(prev => 
-                        prev.map(msg => 
-                          msg.id === aiMessageId 
-                            ? { ...msg, content: content }
-                            : msg
-                        )
-                      );
-                    }
-                    hasStarted = true;
-                  }
-                  
-                  fullContent += content;
-                  
-                  setMessages(prev => 
-                    prev.map(msg => 
-                      msg.id === aiMessageId 
-                        ? { ...msg, content: fullContent }
-                        : msg
-                    )
-                  );
-                }
-              } catch {
-                // 跳过无法解析的行
-              }
-            }
-          }
-        }
-
-        if (!fullContent) {
+          fullContent += content;
+          
           setMessages(prev => 
             prev.map(msg => 
               msg.id === aiMessageId 
-                ? { ...msg, content: '抱歉，我无法生成回复。' }
+                ? { ...msg, content: fullContent }
                 : msg
             )
           );
-          break;
-        } else {
-          const { cleanContent, options } = extractOptions(fullContent);
-          
-          if (options.length === 3) {
-            hasValidOptions = true;
+        },
+        (finalContent) => {
+          if (!finalContent) {
             setMessages(prev => 
               prev.map(msg => 
                 msg.id === aiMessageId 
-                  ? { ...msg, content: cleanContent }
+                  ? { ...msg, content: '抱歉，我无法生成回复。' }
                   : msg
               )
             );
+          } else {
+            // 🔥 解析 JSON 响应
+            const { reply, options } = parseJSONResponse(finalContent);
+            
+            setMessages(prev => 
+              prev.map(msg => 
+                msg.id === aiMessageId 
+                  ? { ...msg, content: reply }
+                  : msg
+              )
+            );
+            
             setSuggestedOptions(options);
             setOptionMessageId(aiMessageId);
-          } else {
-            retryCount++;
-            console.log(`选项提取失败，重试第 ${retryCount} 次...`);
-            
-            if (retryCount < maxRetries) {
-              setMessages(prev => 
-                prev.map(msg => 
-                  msg.id === aiMessageId 
-                    ? { ...msg, content: `🔄 正在重新生成选项... (${retryCount}/${maxRetries})` }
-                    : msg
-                )
-              );
-              
-              await new Promise(resolve => setTimeout(resolve, 500));
-            } else {
-              console.log('达到最大重试次数，使用备用选项');
-              setMessages(prev => 
-                prev.map(msg => 
-                  msg.id === aiMessageId 
-                    ? { ...msg, content: cleanContent }
-                    : msg
-                )
-              );
-              const backupOptions = generateRandomFallbackOptions();
-              setSuggestedOptions(backupOptions);
-              setOptionMessageId(aiMessageId);
-              hasValidOptions = true;
-            }
-          }
-        }
 
-      } catch (error: unknown) {
-        if (error instanceof Error && error.name === 'AbortError') {
-          console.log('生成已停止');
-          break;
-        } else {
-          console.error('请求错误:', error);
-          
-          retryCount++;
-          if (retryCount < maxRetries) {
-            console.log(`请求失败，重试第 ${retryCount} 次...`);
-            
-            if (!aiMessageCreated) {
-              const errorMessage: Message = {
-                id: aiMessageId,
-                role: 'ai',
-                content: `⚠️ 请求失败，正在重试... (${retryCount}/${maxRetries})`,
-                timestamp: Date.now()
-              };
-              setMessages(prev => [...prev, errorMessage]);
-              aiMessageCreated = true;
-            } else {
-              setMessages(prev => 
-                prev.map(msg => 
-                  msg.id === aiMessageId 
-                    ? { ...msg, content: `⚠️ 请求失败，正在重试... (${retryCount}/${maxRetries})` }
-                    : msg
-                )
-              );
+            // 🔥 优化：如果有图片，将用户消息转为纯文字描述
+            if (hasFiles) {
+              setMessages(prev => prev.map(msg => {
+                if (msg.id === userMessage.id) {
+                  return {
+                    ...msg,
+                    content: `${textToSend || '请分析这些图片'}\n[已上传 ${currentFiles.length} 张图片]`
+                  };
+                }
+                return msg;
+              }));
             }
-            
-            await new Promise(resolve => setTimeout(resolve, 1000));
-          } else {
-            setMessages(prev => 
-              prev.map(msg => 
-                msg.id === aiMessageId 
-                  ? { ...msg, content: '抱歉，连接服务器失败，请稍后再试。' }
-                  : msg
-              )
-            );
-            break;
           }
         }
+      );
+
+    } catch (error: unknown) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        console.log('生成已停止');
+      } else {
+        console.error('请求错误:', error);
+        setMessages(prev => 
+          prev.map(msg => 
+            msg.id === aiMessageId 
+              ? { ...msg, content: '抱歉，连接服务器失败，请稍后再试。' }
+              : msg
+          )
+        );
       }
+    } finally {
+      setIsGenerating(false);
+      abortControllerRef.current = null;
     }
-
-    setIsGenerating(false);
-    abortControllerRef.current = null;
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -680,11 +587,11 @@ export default function Home() {
               remarkPlugins={[remarkGfm, remarkMath]}
               rehypePlugins={[rehypeKatex]}
               components={{
-                strong: () => (
-                  <strong style={{fontWeight: '700', color: 'inherit'}} />
+                strong: ({node, ...props}) => (
+                  <strong style={{fontWeight: '700', color: 'inherit'}} {...props} />
                 ),
-                em: () => (
-                  <em style={{fontStyle: 'italic'}} />
+                em: ({node, ...props}) => (
+                  <em style={{fontStyle: 'italic'}} {...props} />
                 )
               }}
             >
@@ -751,22 +658,6 @@ export default function Home() {
       <div className="pointer-events-none absolute -bottom-20 left-1/2 -translate-x-1/2 -z-10 h-[400px] w-[400px] rounded-full bg-pink-200/10 blur-3xl" />
 
       <Snowflakes />
-
-      {pasteHint && (
-        <div style={{
-          position: 'fixed',
-          top: '20px',
-          right: '20px',
-          background: 'rgba(22, 163, 74, 0.9)',
-          color: 'white',
-          padding: '12px 20px',
-          borderRadius: '12px',
-          zIndex: 1000,
-          boxShadow: '0 4px 12px rgba(0,0,0,0.2)'
-        }}>
-          {pasteHint}
-        </div>
-      )}
 
       {winterEmojis.map((item) => (
         <div
@@ -906,7 +797,7 @@ export default function Home() {
             
             <textarea
               className="input-box resize-none"
-              placeholder="输入消息或 Ctrl+V 粘贴图片...🎄"
+              placeholder="输入你的消息...🎄"
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               onKeyPress={handleKeyPress}
@@ -927,5 +818,3 @@ export default function Home() {
     </main>
   );
 }
-
-          
