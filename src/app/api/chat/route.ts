@@ -6,28 +6,55 @@ type APIMessage = {
   content: string | Array<{type: string; text?: string; image_url?: {url: string}}>;
 };
 
-export async function POST(req: NextRequest) {
-  try {
-    const body = await req.json();
-    const { messages, isFirstLoad } = body as {
-      messages: APIMessage[];
-      isFirstLoad?: boolean;
-    };
+// 服务商配置类型
+interface ProviderConfig {
+  baseUrl: string;
+  key: string;
+  model: string;
+  name: string;
+}
 
-    if (!messages || !Array.isArray(messages)) {
-      return new Response(
-        JSON.stringify({ error: '无效的消息格式' }),
-        { status: 400, headers: { 'Content-Type': 'application/json' } }
-      );
+// 获取所有可用的服务商配置
+function getProviders(): ProviderConfig[] {
+  const providers: ProviderConfig[] = [];
+  
+  // 读取4个服务商配置
+  for (let i = 1; i <= 4; i++) {
+    const baseUrl = process.env[`BASE_URL_${i}`];
+    const key = process.env[`KEY_${i}`];
+    const model = process.env[`MODEL_${i}`];
+    
+    if (baseUrl && key && model) {
+      providers.push({
+        baseUrl,
+        key,
+        model,
+        name: `Provider_${i}`
+      });
     }
+  }
+  
+  return providers;
+}
 
-    let systemMessage: { role: 'system'; content: string };
-
-    if (isFirstLoad || (messages.length === 1 && messages[0].role === 'user')) {
-      // 🔥 首次对话：生成话题选项（JSON 格式）
-      systemMessage = {
-        role: 'system' as const,
-        content: `你是可乐创造的超有趣AI助手"小可乐"！个性活泼、情绪丰富、特别会聊天！
+// 创建单个提供商的请求
+async function createProviderStream(
+  provider: ProviderConfig,
+  messages: any[],
+  isFirstLoad: boolean
+): Promise<{
+  stream: ReadableStream;
+  controller: AbortController;
+}> {
+  const controller = new AbortController();
+  
+  // 构造 system message
+  let systemMessage: { role: 'system'; content: string };
+  
+  if (isFirstLoad || (messages.length === 1 && messages[0].role === 'user')) {
+    systemMessage = {
+      role: 'system' as const,
+      content: `你是可乐创造的超有趣AI助手"小可乐"！个性活泼、情绪丰富、特别会聊天！
 
 【初次见面模式】
 用温暖、热情、略带俏皮的语气欢迎用户！然后提供3个完全不同领域的有趣话题。
@@ -66,12 +93,11 @@ export async function POST(req: NextRequest) {
 3. 每个选项 8-15 字，emoji 开头
 4. 选项不要出现"话题1"、"话题2"等字样
 5. 要像真人朋友一样聊天，别太正式！`
-      };
-    } else {
-      // 🔥 后续对话：猜测用户想说什么（JSON 格式）
-      systemMessage = {
-        role: 'system' as const,
-        content: `你是"可乐的小站"的超有趣AI助手"小可乐"！个性活泼、情绪丰富、特别会聊天！
+    };
+  } else {
+    systemMessage = {
+      role: 'system' as const,
+      content: `你是"可乐的小站"的超有趣AI助手"小可乐"！个性活泼、情绪丰富、特别会聊天！
 
 【关于可乐的信息】
 - 除了自我介绍，其余不要主动提及可乐这个人
@@ -148,42 +174,152 @@ export async function POST(req: NextRequest) {
 }
 
 记住：必须返回有效的 JSON 格式，options 必须是3个字符串的数组！`
-      };
+    };
+  }
+
+  const response = await fetch(`${provider.baseUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${provider.key}`,
+    },
+    body: JSON.stringify({
+      model: provider.model,
+      messages: [systemMessage, ...messages],
+      response_format: { type: 'json_object' },
+      temperature: 1.0,
+      stream: true,
+      presence_penalty: 0.7,
+      frequency_penalty: 0.4,
+      max_tokens: 2000,
+    }),
+    signal: controller.signal,
+  });
+
+  if (!response.ok) {
+    throw new Error(`${provider.name} 返回错误: ${response.status}`);
+  }
+
+  return {
+    stream: response.body!,
+    controller
+  };
+}
+
+// 竞速获取最快的流
+async function raceToGetFastestStream(
+  providers: ProviderConfig[],
+  messages: any[],
+  isFirstLoad: boolean
+): Promise<ReadableStream> {
+  // 为每个提供商创建请求
+  const providerPromises = providers.map(async (provider) => {
+    try {
+      return await createProviderStream(provider, messages, isFirstLoad);
+    } catch (error) {
+      console.error(`Provider ${provider.name} 初始化失败:`, error);
+      return null;
     }
+  });
 
-    const response = await fetch('https://yunwu.ai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.YUNWU_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: 'gemini-2.5-flash-preview-09-2025-nothinking',
-        messages: [systemMessage, ...messages],
-        response_format: { type: 'json_object' },  // 🔥 强制 JSON 输出
-        temperature: 1.0,  // 降低温度提高稳定性
-        stream: true,
-        presence_penalty: 0.7,
-        frequency_penalty: 0.4,
-        max_tokens: 2000,  // 限制长度
-      }),
-    });
+  const results = await Promise.all(providerPromises);
+  const validResults = results.filter(r => r !== null) as Array<{
+    stream: ReadableStream;
+    controller: AbortController;
+  }>;
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('API 错误:', response.status, errorText);
-      
+  if (validResults.length === 0) {
+    throw new Error('没有可用的服务商');
+  }
+
+  // 创建一个新的 ReadableStream，它会竞速选择最快的输入流
+  const raceStream = new ReadableStream({
+    start(controller) {
+      let settled = false;
+      const settledControllers: AbortController[] = [];
+
+      // 为每个流设置竞速
+      validResults.forEach(result => {
+        const reader = result.stream.getReader();
+
+        const processChunk = async () => {
+          try {
+            const { done, value } = await reader.read();
+            
+            if (done) {
+              if (!settled) {
+                settled = true;
+                controller.close();
+                // 取消其他所有流
+                settledControllers.forEach(c => c.abort());
+              }
+              return;
+            }
+
+            if (!settled) {
+              settled = true;
+              // 第一个返回数据的流获胜
+              controller.enqueue(value);
+              // 取消其他所有流
+              settledControllers.forEach(c => c.abort());
+              
+              // 继续读取获胜的流
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                controller.enqueue(value);
+              }
+              controller.close();
+            }
+          } catch (error) {
+            console.error(`流处理错误:`, error);
+            if (!settled) {
+              // 这个流失败了，但其他流可能还在竞争
+              settledControllers.splice(settledControllers.indexOf(result.controller), 1);
+            }
+          }
+        };
+
+        settledControllers.push(result.controller);
+        processChunk();
+      });
+    }
+  });
+
+  return raceStream;
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const body = await req.json();
+    const { messages, isFirstLoad } = body as {
+      messages: APIMessage[];
+      isFirstLoad?: boolean;
+    };
+
+    if (!messages || !Array.isArray(messages)) {
       return new Response(
-        JSON.stringify({ 
-          error: '服务器返回错误',
-          details: errorText,
-          status: response.status 
-        }),
-        { status: response.status, headers: { 'Content-Type': 'application/json' } }
+        JSON.stringify({ error: '无效的消息格式' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
     }
 
-    return new Response(response.body, {
+    // 获取所有可用的服务商
+    const providers = getProviders();
+    
+    if (providers.length === 0) {
+      return new Response(
+        JSON.stringify({ error: '没有配置任何服务商' }),
+        { status: 500, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    console.log(`开始竞速请求，共 ${providers.length} 个服务商`);
+
+    // 竞速获取最快的流
+    const fastestStream = await raceToGetFastestStream(providers, messages, isFirstLoad || false);
+
+    return new Response(fastestStream, {
       headers: {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
