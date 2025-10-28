@@ -711,7 +711,7 @@ export default function Home() {
                    className="avatar-img"
                  />
                ) : (
-                 '🎅'
+                 '🐮'
                )}
              </div>
              <div className="bubble">
