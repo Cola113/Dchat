@@ -40,7 +40,7 @@ function getProviders(): ProviderConfig[] {
 // 创建单个提供商的请求
 async function createProviderStream(
   provider: ProviderConfig,
-  messages: any[],
+  messages: APIMessage[],  // 🔥 修复：使用具体类型替换 any
   isFirstLoad: boolean
 ): Promise<{
   stream: ReadableStream;
@@ -209,7 +209,7 @@ async function createProviderStream(
 // 竞速获取最快的流
 async function raceToGetFastestStream(
   providers: ProviderConfig[],
-  messages: any[],
+  messages: APIMessage[],  // 🔥 修复：使用具体类型替换 any
   isFirstLoad: boolean
 ): Promise<ReadableStream> {
   // 为每个提供商创建请求
