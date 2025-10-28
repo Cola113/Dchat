@@ -23,7 +23,6 @@ type UploadedFile = {
   data: string;
 };
 
-// 🔥 提取类型定义，避免 Turbopack 解析错误
 type ContentItem = {
   type: string;
   text?: string;
@@ -93,10 +92,10 @@ export default function Home() {
   const abortControllerRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // 🔥 优化：提取流式处理公共函数
+  // 🔥 优化：流式处理 + 实时提取 reply 字段
   const processStreamResponse = async (
     reader: ReadableStreamDefaultReader<Uint8Array>,
-    onChunk: (content: string) => void,
+    onChunk: (displayContent: string) => void,
     onComplete: (fullContent: string) => void
   ) => {
     const decoder = new TextDecoder();
@@ -106,7 +105,7 @@ export default function Home() {
       const { done, value } = await reader.read();
       if (done) break;
 
-      const chunk = decoder.decode(value);
+      const chunk = decoder.decode(value, { stream: true });
       const lines = chunk.split('\n');
 
       for (const line of lines) {
@@ -123,7 +122,26 @@ export default function Home() {
             
             if (content) {
               fullContent += content;
-              onChunk(content);
+              
+              // 🔥 尝试实时提取 reply 字段（隐藏 JSON 结构）
+              try {
+                const partialMatch = fullContent.match(/"reply"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+                if (partialMatch) {
+                  const displayContent = partialMatch[1]
+                    .replace(/\\n/g, '\n')
+                    .replace(/\\"/g, '"')
+                    .replace(/\\\\/g, '\\');
+                  
+                  // 显示已解析的 reply 部分
+                  onChunk(displayContent);
+                } else {
+                  // 如果还没解析到 reply，显示原始内容
+                  onChunk(fullContent);
+                }
+              } catch {
+                // 解析失败时显示原始内容
+                onChunk(fullContent);
+              }
             }
           } catch {
             // 跳过无法解析的行
@@ -135,10 +153,9 @@ export default function Home() {
     onComplete(fullContent);
   };
 
-  // 🔥 优化：JSON 格式解析（支持流式和完整响应）
+  // JSON 格式解析（保持原有逻辑）
   const parseJSONResponse = (content: string): { reply: string; options: string[] } => {
     try {
-      // 尝试直接解析完整 JSON
       const parsed = JSON.parse(content);
       
       if (parsed.reply && Array.isArray(parsed.options) && parsed.options.length === 3) {
@@ -148,7 +165,6 @@ export default function Home() {
         };
       }
     } catch {
-      // JSON 解析失败，尝试提取部分内容
       const replyMatch = content.match(/"reply"\s*:\s*"([^"]+)"/);
       const optionsMatch = content.match(/"options"\s*:\s*\[([\s\S]*?)\]/);
       
@@ -169,7 +185,6 @@ export default function Home() {
       }
     }
     
-    // 兜底：返回原内容 + 默认选项
     console.warn('JSON 解析失败，使用兜底选项');
     return {
       reply: content,
@@ -181,13 +196,11 @@ export default function Home() {
     };
   };
 
-  // 🔥 优化：构建 API 消息（图片只在最后一条保留）
   const buildAPIMessages = (
     allMessages: Message[], 
     newUserContent: string | ContentItem[]
   ): APIMessage[] => {
     const apiMessages: APIMessage[] = allMessages.map((msg) => {
-      // 如果是历史用户消息且包含图片，转为纯文字描述
       if (msg.role === 'user' && Array.isArray(msg.content)) {
         const textPart = msg.content.find(item => item.type === 'text');
         const imageCount = msg.content.filter(item => item.type === 'image_url').length;
@@ -204,7 +217,6 @@ export default function Home() {
       };
     });
 
-    // 添加新消息（保留图片）
     apiMessages.push({
       role: 'user',
       content: newUserContent
@@ -242,12 +254,15 @@ export default function Home() {
       const reader = response.body?.getReader();
       if (!reader) throw new Error('无法读取响应');
 
-      let fullContent = '';
-
       await processStreamResponse(
         reader,
-        (content) => {
-          fullContent += content;
+        (displayContent) => {
+          // 🎨 流式显示提取的 reply 内容
+          setMessages(prev => prev.map(msg => 
+            msg.id === initialMessageId 
+              ? { ...msg, content: displayContent } 
+              : msg
+          ));
         },
         (finalContent) => {
           const { reply, options } = parseJSONResponse(finalContent);
@@ -335,501 +350,485 @@ export default function Home() {
     try {
       const imageFiles = Array.from(files).filter(file => {
         if (!file.type.startsWith('image/')) {
-          alert(`"${file.name}" 不是图片文件，已跳过`);
-          return false;
-        }
-        return true;
-      });
+          alert(`"${file.name}"不是图片文件，已跳过`);
+         return false;
+       }
+       return true;
+     });
 
-      if (imageFiles.length === 0) {
-        alert('请选择图片文件！');
-        return;
-      }
+     if (imageFiles.length === 0) {
+       alert('请选择图片文件！');
+       return;
+     }
 
-      const filePromises = imageFiles.map(async (file) => {
-        return new Promise<UploadedFile>((resolve, reject) => {
-          const reader = new FileReader();
-          
-          reader.onload = () => {
-            const result = reader.result as string;
-            
-            resolve({
-              name: file.name,
-              type: file.type,
-              data: result
-            });
-          };
-          
-          reader.onerror = () => reject(new Error('文件读取失败'));
-          reader.readAsDataURL(file);
-        });
-      });
+     const filePromises = imageFiles.map(async (file) => {
+       return new Promise<UploadedFile>((resolve, reject) => {
+         const reader = new FileReader();
+         
+         reader.onload = () => {
+           const result = reader.result as string;
+           
+           resolve({
+             name: file.name,
+             type: file.type,
+             data: result
+           });
+         };
+         
+         reader.onerror = () => reject(new Error('文件读取失败'));
+         reader.readAsDataURL(file);
+       });
+     });
 
-      const uploaded = await Promise.all(filePromises);
-      setUploadedFiles(prev => [...prev, ...uploaded]);
-    } catch (error) {
-      console.error('文件读取错误:', error);
-      alert('文件读取失败，请重试');
-    } finally {
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
-    }
-  };
+     const uploaded = await Promise.all(filePromises);
+     setUploadedFiles(prev => [...prev, ...uploaded]);
+   } catch (error) {
+     console.error('文件读取错误:', error);
+     alert('文件读取失败，请重试');
+   } finally {
+     if (fileInputRef.current) {
+       fileInputRef.current.value = '';
+     }
+   }
+ };
 
-  const removeFile = (index: number) => {
-    setUploadedFiles(prev => prev.filter((_, i) => i !== index));
-  };
+ const removeFile = (index: number) => {
+   setUploadedFiles(prev => prev.filter((_, i) => i !== index));
+ };
 
-  const handleStop = () => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
-      setIsGenerating(false);
-    }
-  };
+ const handleStop = () => {
+   if (abortControllerRef.current) {
+     abortControllerRef.current.abort();
+     abortControllerRef.current = null;
+     setIsGenerating(false);
+   }
+ };
 
-  const handleSend = async (messageText?: string) => {
-    const textToSend = messageText || inputValue.trim();
-    
-    if (!textToSend && uploadedFiles.length === 0) return;
+ const handleSend = async (messageText?: string) => {
+   const textToSend = messageText || inputValue.trim();
+   
+   if (!textToSend && uploadedFiles.length === 0) return;
 
-    if (isGenerating) {
-      handleStop();
-      return;
-    }
+   if (isGenerating) {
+     handleStop();
+     return;
+   }
 
-    setSuggestedOptions([]);
-    setOptionMessageId(null);
+   setSuggestedOptions([]);
+   setOptionMessageId(null);
 
-    // 🔥 构造用户消息内容
-    let userContent: string | ContentItem[];
+   let userContent: string | ContentItem[];
 
-    if (uploadedFiles.length > 0) {
-      userContent = [
-        { type: 'text', text: textToSend || '请分析这些图片' },
-        ...uploadedFiles.map(file => ({
-          type: 'image_url',
-          image_url: { url: file.data }
-        }))
-      ];
-    } else {
-      userContent = textToSend;
-    }
+   if (uploadedFiles.length > 0) {
+     userContent = [
+       { type: 'text', text: textToSend || '请分析这些图片' },
+       ...uploadedFiles.map(file => ({
+         type: 'image_url',
+         image_url: { url: file.data }
+       }))
+     ];
+   } else {
+     userContent = textToSend;
+   }
 
-    const userMessage: Message = {
-      id: uid(),
-      role: 'user',
-      content: userContent,
-      timestamp: Date.now()
-    };
+   const userMessage: Message = {
+     id: uid(),
+     role: 'user',
+     content: userContent,
+     timestamp: Date.now()
+   };
 
-    setMessages(prev => [...prev, userMessage]);
-    setInputValue('');
-    const currentFiles = [...uploadedFiles];
-    setUploadedFiles([]);
-    setIsGenerating(true);
+   setMessages(prev => [...prev, userMessage]);
+   setInputValue('');
+   const currentFiles = [...uploadedFiles];
+   setUploadedFiles([]);
+   setIsGenerating(true);
 
-    const aiMessageId = uid();
-    const hasFiles = currentFiles.length > 0;
+   const aiMessageId = uid();
+   const hasFiles = currentFiles.length > 0;
 
-    if (hasFiles) {
-      const loadingMessage: Message = {
-        id: aiMessageId,
-        role: 'ai',
-        content: '🔍 正在分析图片，请稍候...',
-        timestamp: Date.now()
-      };
-      setMessages(prev => [...prev, loadingMessage]);
-    }
+   if (hasFiles) {
+     const loadingMessage: Message = {
+       id: aiMessageId,
+       role: 'ai',
+       content: '🔍 正在分析图片，请稍候...',
+       timestamp: Date.now()
+     };
+     setMessages(prev => [...prev, loadingMessage]);
+   }
 
-    try {
-      // 🔥 使用优化后的消息构建函数
-      const apiMessages = buildAPIMessages(messages, userContent);
+   try {
+     const apiMessages = buildAPIMessages(messages, userContent);
+     abortControllerRef.current = new AbortController();
 
-      abortControllerRef.current = new AbortController();
+     const response = await fetch('/api/chat', {
+       method: 'POST',
+       headers: {
+         'Content-Type': 'application/json',
+       },
+       body: JSON.stringify({
+         messages: apiMessages
+       }),
+       signal: abortControllerRef.current.signal
+     });
 
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          messages: apiMessages
-        }),
-        signal: abortControllerRef.current.signal
-      });
+     if (!response.ok) {
+       throw new Error('请求失败');
+     }
 
-      if (!response.ok) {
-        throw new Error('请求失败');
-      }
+     const reader = response.body?.getReader();
+     if (!reader) {
+       throw new Error('无法读取响应流');
+     }
 
-      const reader = response.body?.getReader();
+     let hasStarted = false;
 
-      if (!reader) {
-        throw new Error('无法读取响应流');
-      }
+     await processStreamResponse(
+       reader,
+       (displayContent) => {
+         // 🎨 流式显示提取的 reply 内容
+         if (!hasStarted) {
+           if (!hasFiles) {
+             const aiMessage: Message = {
+               id: aiMessageId,
+               role: 'ai',
+               content: displayContent,
+               timestamp: Date.now()
+             };
+             setMessages(prev => [...prev, aiMessage]);
+           }
+           hasStarted = true;
+         }
+         
+         setMessages(prev => 
+           prev.map(msg => 
+             msg.id === aiMessageId 
+               ? { ...msg, content: displayContent }
+               : msg
+           )
+         );
+       },
+       (finalContent) => {
+         if (!finalContent) {
+           setMessages(prev => 
+             prev.map(msg => 
+               msg.id === aiMessageId 
+                 ? { ...msg, content: '抱歉，我无法生成回复。' }
+                 : msg
+             )
+           );
+         } else {
+           const { reply, options } = parseJSONResponse(finalContent);
+           
+           setMessages(prev => 
+             prev.map(msg => 
+               msg.id === aiMessageId 
+                 ? { ...msg, content: reply }
+                 : msg
+             )
+           );
+           
+           setSuggestedOptions(options);
+           setOptionMessageId(aiMessageId);
 
-      let fullContent = '';
-      let hasStarted = false;
+           if (hasFiles) {
+             setMessages(prev => prev.map(msg => {
+               if (msg.id === userMessage.id) {
+                 return {
+                   ...msg,
+                   content: `${textToSend || '请分析这些图片'}\n[已上传 ${currentFiles.length} 张图片]`
+                 };
+               }
+               return msg;
+             }));
+           }
+         }
+       }
+     );
 
-      await processStreamResponse(
-        reader,
-        (content) => {
-          if (!hasStarted) {
-            if (hasFiles) {
-              setMessages(prev => 
-                prev.map(msg => 
-                  msg.id === aiMessageId 
-                    ? { ...msg, content: content }
-                    : msg
-                )
-              );
-            } else {
-              const aiMessage: Message = {
-                id: aiMessageId,
-                role: 'ai',
-                content: content,
-                timestamp: Date.now()
-              };
-              setMessages(prev => [...prev, aiMessage]);
-            }
-            hasStarted = true;
-          }
-          
-          fullContent += content;
-          
-          setMessages(prev => 
-            prev.map(msg => 
-              msg.id === aiMessageId 
-                ? { ...msg, content: fullContent }
-                : msg
-            )
-          );
-        },
-        (finalContent) => {
-          if (!finalContent) {
-            setMessages(prev => 
-              prev.map(msg => 
-                msg.id === aiMessageId 
-                  ? { ...msg, content: '抱歉，我无法生成回复。' }
-                  : msg
-              )
-            );
-          } else {
-            // 🔥 解析 JSON 响应
-            const { reply, options } = parseJSONResponse(finalContent);
-            
-            setMessages(prev => 
-              prev.map(msg => 
-                msg.id === aiMessageId 
-                  ? { ...msg, content: reply }
-                  : msg
-              )
-            );
-            
-            setSuggestedOptions(options);
-            setOptionMessageId(aiMessageId);
+   } catch (error: unknown) {
+     if (error instanceof Error && error.name === 'AbortError') {
+       console.log('生成已停止');
+     } else {
+       console.error('请求错误:', error);
+       setMessages(prev => 
+         prev.map(msg => 
+           msg.id === aiMessageId 
+             ? { ...msg, content: '抱歉，连接服务器失败，请稍后再试。' }
+             : msg
+         )
+       );
+     }
+   } finally {
+     setIsGenerating(false);
+     abortControllerRef.current = null;
+   }
+ };
 
-            // 🔥 优化：如果有图片，将用户消息转为纯文字描述
-            if (hasFiles) {
-              setMessages(prev => prev.map(msg => {
-                if (msg.id === userMessage.id) {
-                  return {
-                    ...msg,
-                    content: `${textToSend || '请分析这些图片'}\n[已上传 ${currentFiles.length} 张图片]`
-                  };
-                }
-                return msg;
-              }));
-            }
-          }
-        }
-      );
+ const handleKeyPress = (e: React.KeyboardEvent) => {
+   if (e.key === 'Enter' && !e.shiftKey) {
+     e.preventDefault();
+     handleSend();
+   }
+ };
 
-    } catch (error: unknown) {
-      if (error instanceof Error && error.name === 'AbortError') {
-        console.log('生成已停止');
-      } else {
-        console.error('请求错误:', error);
-        setMessages(prev => 
-          prev.map(msg => 
-            msg.id === aiMessageId 
-              ? { ...msg, content: '抱歉，连接服务器失败，请稍后再试。' }
-              : msg
-          )
-        );
-      }
-    } finally {
-      setIsGenerating(false);
-      abortControllerRef.current = null;
-    }
-  };
+ const handleOptionClick = (option: string) => {
+   handleSend(option);
+ };
 
-  const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
-  };
+ const renderTextWithBold = (text: string) => {
+   const parts = text.split(/(\*\*.*?\*\*)/g);
+   
+   return parts.map((part, index) => {
+     if (part.startsWith('**') && part.endsWith('**')) {
+       const boldText = part.slice(2, -2);
+       return <strong key={index} style={{fontWeight: '700'}}>{boldText}</strong>;
+     }
+     return <span key={index}>{part}</span>;
+   });
+ };
 
-  const handleOptionClick = (option: string) => {
-    handleSend(option);
-  };
+ const renderMessageContent = (content: string | ContentItem[], messageId?: string) => {
+   if (typeof content === 'string') {
+     const shouldShowOptions = messageId === optionMessageId && suggestedOptions.length === 3;
+     
+     const hasComplexMarkdown = content.includes('```') || content.includes('#') || content.includes('- ') || content.includes('* ');
+     
+     return (
+       <div>
+         {hasComplexMarkdown ? (
+           <ReactMarkdown 
+             remarkPlugins={[remarkGfm, remarkMath]}
+             rehypePlugins={[rehypeKatex]}
+             components={{
+               strong: ({node, ...props}) => (
+                 <strong style={{fontWeight: '700', color: 'inherit'}} {...props} />
+               ),
+               em: ({node, ...props}) => (
+                 <em style={{fontStyle: 'italic'}} {...props} />
+               )
+             }}
+           >
+             {content}
+           </ReactMarkdown>
+         ) : (
+           <div style={{whiteSpace: 'pre-wrap'}}>
+             {renderTextWithBold(content)}
+           </div>
+         )}
+         {shouldShowOptions && (
+           <div className="message-options">
+             <div className="options-label">💡点击选择✨</div>
+             <div className="options-buttons">
+               {suggestedOptions.map((option, index) => (
+                 <button
+                   key={index}
+                   className="option-button-in-message"
+                   onClick={() => handleOptionClick(option)}
+                 >
+                   {option}
+                 </button>
+               ))}
+             </div>
+           </div>
+         )}
+       </div>
+     );
+   }
+   
+   return (
+     <div>
+       {content.map((item, index) => {
+         if (item.type === 'text') {
+           return <div key={index}>{item.text}</div>;
+         }
+         if (item.type === 'image_url' && item.image_url) {
+           return (
+             <div key={index} className="uploaded-image-container">
+               <Image
+                 src={item.image_url.url}
+                 alt="上传的图片"
+                 width={200}
+                 height={150}
+                 className="uploaded-image"
+               />
+             </div>
+           );
+         }
+         return null;
+       })}
+     </div>
+   );
+ };
 
-  const renderTextWithBold = (text: string) => {
-    const parts = text.split(/(\*\*.*?\*\*)/g);
-    
-    return parts.map((part, index) => {
-      if (part.startsWith('**') && part.endsWith('**')) {
-        const boldText = part.slice(2, -2);
-        return <strong key={index} style={{fontWeight: '700'}}>{boldText}</strong>;
-      }
-      return <span key={index}>{part}</span>;
-    });
-  };
+ return (
+   <main 
+     className="relative min-h-[100dvh] overflow-hidden"
+     onClick={handleEmojiClick}
+   >
+     <div className="absolute inset-0 -z-30 bg-gradient-to-b from-sky-400 via-green-200/60 via-30% via-red-200/50 via-60% to-white" />
+     <div className="pointer-events-none absolute -top-40 left-1/4 -z-10 h-[500px] w-[500px] rounded-full bg-blue-400/20 blur-3xl" />
+     <div className="pointer-events-none absolute top-1/3 right-1/4 -z-10 h-[400px] w-[400px] rounded-full bg-green-300/15 blur-3xl" />
+     <div className="pointer-events-none absolute -bottom-20 left-1/2 -translate-x-1/2 -z-10 h-[400px] w-[400px] rounded-full bg-pink-200/10 blur-3xl" />
 
-  const renderMessageContent = (content: string | ContentItem[], messageId?: string) => {
-    if (typeof content === 'string') {
-      const shouldShowOptions = messageId === optionMessageId && suggestedOptions.length === 3;
-      
-      const hasComplexMarkdown = content.includes('```') || content.includes('#') || content.includes('- ') || content.includes('* ');
-      
-      return (
-        <div>
-          {hasComplexMarkdown ? (
-            <ReactMarkdown 
-              remarkPlugins={[remarkGfm, remarkMath]}
-              rehypePlugins={[rehypeKatex]}
-              components={{
-                strong: ({node, ...props}) => (
-                  <strong style={{fontWeight: '700', color: 'inherit'}} {...props} />
-                ),
-                em: ({node, ...props}) => (
-                  <em style={{fontStyle: 'italic'}} {...props} />
-                )
-              }}
-            >
-              {content}
-            </ReactMarkdown>
-          ) : (
-            <div style={{whiteSpace: 'pre-wrap'}}>
-              {renderTextWithBold(content)}
-            </div>
-          )}
-          {shouldShowOptions && (
-            <div className="message-options">
-              <div className="options-label">💡点击选择✨</div>
-              <div className="options-buttons">
-                {suggestedOptions.map((option, index) => (
-                  <button
-                    key={index}
-                    className="option-button-in-message"
-                    onClick={() => handleOptionClick(option)}
-                  >
-                    {option}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      );
-    }
-    
-    return (
-      <div>
-        {content.map((item, index) => {
-          if (item.type === 'text') {
-            return <div key={index}>{item.text}</div>;
-          }
-          if (item.type === 'image_url' && item.image_url) {
-            return (
-              <div key={index} className="uploaded-image-container">
-                <Image
-                  src={item.image_url.url}
-                  alt="上传的图片"
-                  width={200}
-                  height={150}
-                  className="uploaded-image"
-                />
-              </div>
-            );
-          }
-          return null;
-        })}
-      </div>
-    );
-  };
+     <Snowflakes />
 
-  return (
-    <main 
-      className="relative min-h-[100dvh] overflow-hidden"
-      onClick={handleEmojiClick}
-    >
-      <div className="absolute inset-0 -z-30 bg-gradient-to-b from-sky-400 via-green-200/60 via-30% via-red-200/50 via-60% to-white" />
-      <div className="pointer-events-none absolute -top-40 left-1/4 -z-10 h-[500px] w-[500px] rounded-full bg-blue-400/20 blur-3xl" />
-      <div className="pointer-events-none absolute top-1/3 right-1/4 -z-10 h-[400px] w-[400px] rounded-full bg-green-300/15 blur-3xl" />
-      <div className="pointer-events-none absolute -bottom-20 left-1/2 -translate-x-1/2 -z-10 h-[400px] w-[400px] rounded-full bg-pink-200/10 blur-3xl" />
+     {winterEmojis.map((item) => (
+       <div
+         key={item.id}
+         className={`winter-emoji winter-emoji-anim-${item.anim}`}
+         style={{ left: item.x - 16, top: item.y - 16 }}
+       >
+         {item.emoji}
+       </div>
+     ))}
 
-      <Snowflakes />
+     <div className="chat-container">
+       <div className="header">
+         <div style={{ display: 'inline-block' }}>
+           <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-red-600 via-green-600 to-red-600 shimmer" style={{ letterSpacing: '-0.02em' }}>
+             可乐的小站
+           </h1>
+         </div>
+         <p className="mt-1 text-red-700/90 text-sm glow">
+           <span className="emoji-bounce">🎄</span>顶<span className="emoji-bounce">🎅</span>级<span className="emoji-bounce">⛄</span>牛<span className="emoji-bounce">🎁</span>马<span className="emoji-bounce">🔔</span>
+         </p>
+       </div>
 
-      {winterEmojis.map((item) => (
-        <div
-          key={item.id}
-          className={`winter-emoji winter-emoji-anim-${item.anim}`}
-          style={{ left: item.x - 16, top: item.y - 16 }}
-        >
-          {item.emoji}
-        </div>
-      ))}
+       <div 
+         ref={chatMessagesRef}
+         className="chat-messages"
+       >
+         {messages.map((message) => (
+           <div key={message.id} className={`message ${message.role}`}>
+             <div className="avatar">
+               {message.role === 'ai' ? (
+                 <Image
+                   src="/robot-santa.png"
+                   alt="AI助手"
+                   width={40}
+                   height={40}
+                   className="avatar-img"
+                 />
+               ) : (
+                 '🎅'
+               )}
+             </div>
+             <div className="bubble">
+               {message.role === 'ai' ? (
+                 renderMessageContent(message.content, message.id)
+               ) : (
+                 renderMessageContent(message.content)
+               )}
+             </div>
+           </div>
+         ))}
+         
+         {isGenerating && (
+           <div className="message ai">
+             <div className="avatar">
+               <Image
+                 src="/robot-santa.png"
+                 alt="AI助手"
+                 width={40}
+                 height={40}
+                 className="avatar-img"
+               />
+             </div>
+             <div className="bubble">
+               <div className="typing">
+                 <span></span>
+                 <span></span>
+                 <span></span>
+               </div>
+             </div>
+           </div>
+         )}
+         
+         {isLoadingOptions && messages.length === 1 && (
+           <div className="message ai">
+             <div className="avatar">
+               <Image
+                 src="/robot-santa.png"
+                 alt="AI助手"
+                 width={40}
+                 height={40}
+                 className="avatar-img"
+               />
+             </div>
+             <div className="bubble">
+               <div className="typing">
+                 <span></span>
+                 <span></span>
+                 <span></span>
+               </div>
+             </div>
+           </div>
+         )}
+         
+         <div ref={messagesEndRef} />
+       </div>
 
-      <div className="chat-container">
-        <div className="header">
-          <div style={{ display: 'inline-block' }}>
-            <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-red-600 via-green-600 to-red-600 shimmer" style={{ letterSpacing: '-0.02em' }}>
-              可乐的小站
-            </h1>
-          </div>
-          <p className="mt-1 text-red-700/90 text-sm glow">
-            <span className="emoji-bounce">🎄</span>顶<span className="emoji-bounce">🎅</span>级<span className="emoji-bounce">⛄</span>牛<span className="emoji-bounce">🎁</span>马<span className="emoji-bounce">🔔</span>
-          </p>
-        </div>
+       <div className="input-area">
+         <input
+           ref={fileInputRef}
+           type="file"
+           accept="image/*"
+           multiple
+           onChange={handleFileUpload}
+           style={{ display: 'none' }}
+         />
+         
+         <button 
+           className="upload-button"
+           onClick={() => fileInputRef.current?.click()}
+           title="上传图片"
+         >
+           🖼️
+         </button>
 
-        <div 
-          ref={chatMessagesRef}
-          className="chat-messages"
-        >
-          {messages.map((message) => (
-            <div key={message.id} className={`message ${message.role}`}>
-              <div className="avatar">
-                {message.role === 'ai' ? (
-                  <Image
-                    src="/robot-santa.png"
-                    alt="AI助手"
-                    width={40}
-                    height={40}
-                    className="avatar-img"
-                  />
-                ) : (
-                  '🎅'
-                )}
-              </div>
-              <div className="bubble">
-                {message.role === 'ai' ? (
-                  renderMessageContent(message.content, message.id)
-                ) : (
-                  renderMessageContent(message.content)
-                )}
-              </div>
-            </div>
-          ))}
-          
-          {isGenerating && (
-            <div className="message ai">
-              <div className="avatar">
-                <Image
-                  src="/robot-santa.png"
-                  alt="AI助手"
-                  width={40}
-                  height={40}
-                  className="avatar-img"
-                />
-              </div>
-              <div className="bubble">
-                <div className="typing">
-                  <span></span>
-                  <span></span>
-                  <span></span>
-                </div>
-              </div>
-            </div>
-          )}
-          
-          {isLoadingOptions && messages.length === 1 && (
-            <div className="message ai">
-              <div className="avatar">
-                <Image
-                  src="/robot-santa.png"
-                  alt="AI助手"
-                  width={40}
-                  height={40}
-                  className="avatar-img"
-                />
-              </div>
-              <div className="bubble">
-                <div className="typing">
-                  <span></span>
-                  <span></span>
-                  <span></span>
-                </div>
-              </div>
-            </div>
-          )}
-          
-          <div ref={messagesEndRef} />
-        </div>
+         <div className="input-wrapper">
+           {uploadedFiles.length > 0 && (
+             <div className="uploaded-files">
+               {uploadedFiles.map((file, index) => (
+                 <div key={index} className="file-preview">
+                   <Image
+                     src={file.data}
+                     alt={file.name}
+                     width={80}
+                     height={80}
+                   />
+                   <button 
+                     className="remove-file"
+                     onClick={() => removeFile(index)}
+                   >
+                     ×
+                   </button>
+                 </div>
+               ))}
+             </div>
+           )}
+           
+           <textarea
+             className="input-box resize-none"
+             placeholder="输入你的消息...🎄"
+             value={inputValue}
+             onChange={(e) => setInputValue(e.target.value)}
+             onKeyPress={handleKeyPress}
+             rows={1}
+             style={{ maxHeight: '120px' }}
+           />
+         </div>
 
-        <div className="input-area">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            multiple
-            onChange={handleFileUpload}
-            style={{ display: 'none' }}
-          />
-          
-          <button 
-            className="upload-button"
-            onClick={() => fileInputRef.current?.click()}
-            title="上传图片"
-          >
-            🖼️
-          </button>
-
-          <div className="input-wrapper">
-            {uploadedFiles.length > 0 && (
-              <div className="uploaded-files">
-                {uploadedFiles.map((file, index) => (
-                  <div key={index} className="file-preview">
-                    <Image
-                      src={file.data}
-                      alt={file.name}
-                      width={80}
-                      height={80}
-                    />
-                    <button 
-                      className="remove-file"
-                      onClick={() => removeFile(index)}
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-            
-            <textarea
-              className="input-box resize-none"
-              placeholder="输入你的消息...🎄"
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              onKeyPress={handleKeyPress}
-              rows={1}
-              style={{ maxHeight: '120px' }}
-            />
-          </div>
-
-          <button 
-            className="send-button"
-            onClick={() => handleSend()}
-            disabled={!inputValue.trim() && uploadedFiles.length === 0 && !isGenerating}
-          >
-            {isGenerating ? '⏸' : '发送'}
-          </button>
-        </div>
-      </div>
-    </main>
-  );
+         <button 
+           className="send-button"
+           onClick={() => handleSend()}
+           disabled={!inputValue.trim() && uploadedFiles.length === 0 && !isGenerating}
+         >
+           {isGenerating ? '⏸' : '发送'}
+         </button>
+       </div>
+     </div>
+   </main>
+ );
 }
