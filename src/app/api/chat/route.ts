@@ -162,7 +162,7 @@ async function requestStream(
 }
 
 // ------------------------------------------------------------
-// 5️⃣ 多服务商抢答
+// 5️⃣ 多服务商抢答（✅ 完美实现：立即取消其他请求）
 // ------------------------------------------------------------
 async function raceProviders(
   providers: Provider[],
@@ -172,25 +172,76 @@ async function raceProviders(
 ): Promise<RaceResult> {
   console.log(`🏁 开始竞速，共 ${providers.length} 个服务商:`, providers.map(p => p.name).join(', '));
 
-  const pending = providers.map(async (p) => {
-    try {
-      return await requestStream(p, messages, system, signal);
-    } catch (err) {
-      console.warn(`[${p.name}] 竞速失败，尝试下一个服务商`);
-      return null;
-    }
+  // ✅ 保存每个服务商的 Promise 和 AbortController
+  type RaceEntry = {
+    provider: Provider;
+    promise: Promise<{ ok: true; result: RaceResult } | { ok: false }>;
+    abortControllerPromise: Promise<AbortController | null>;
+  };
+
+  const raceEntries: RaceEntry[] = providers.map((provider) => {
+    let capturedController: AbortController | null = null;
+    
+    const abortControllerPromise = new Promise<AbortController | null>((resolve) => {
+      // 这个 Promise 会在 requestStream 创建 AbortController 后 resolve
+      setTimeout(() => resolve(capturedController), 0);
+    });
+
+    const promise = requestStream(provider, messages, system, signal)
+      .then((result) => {
+        capturedController = result.abortController;
+        return { ok: true as const, result };
+      })
+      .catch((err) => {
+        console.warn(`[${provider.name}] 竞速失败:`, err instanceof Error ? err.message : err);
+        return { ok: false as const };
+      });
+
+    return { provider, promise, abortControllerPromise };
   });
 
-  for await (const result of async function* gen() {
-    for (const p of pending) {
-      const v = await p;
-      if (v) yield v as RaceResult;
+  // ✅ 真正的竞速：找到第一个成功的立即返回
+  const pending = raceEntries.map(entry => entry.promise);
+
+  while (pending.length > 0) {
+    const fastest = await Promise.race(pending);
+
+    if (fastest.ok) {
+      // ✅ 找到第一个成功的，立即返回
+      console.log(`✅ [${fastest.result.providerName}] 竞速获胜！`);
+
+      // ✅ 🔥 关键修复：立即取消所有其他正在进行的请求
+      for (const entry of raceEntries) {
+        if (entry.provider.name !== fastest.result.providerName) {
+          // 立即尝试取消
+          entry.promise.then((result) => {
+            if (result.ok) {
+              try {
+                console.log(`🛑 取消服务商 [${entry.provider.name}] 的请求`);
+                result.result.abortController.abort();
+              } catch (err) {
+                console.warn(`[${entry.provider.name}] 取消时出错:`, err);
+              }
+            }
+          }).catch(() => {
+            // 已经失败的请求，忽略
+          });
+        }
+      }
+
+      return fastest.result;
     }
-  }()) {
-    console.log(`✅ [${result.providerName}] 竞速获胜！`);
-    return result;
+
+    // 这个失败了，从待处理列表中移除
+    const idx = pending.indexOf(Promise.resolve(fastest) as any);
+    if (idx > -1) {
+      pending.splice(idx, 1);
+    } else {
+      pending.shift();
+    }
   }
 
+  // 所有服务商都失败了
   throw new Error('所有配置的服务商均无法返回可用流，请检查网络、密钥或模型名称是否匹配。');
 }
 
@@ -319,7 +370,41 @@ export async function POST(req: NextRequest) {
     }
 
     // -------------------------------------------------
-    // ② 读取服务商配置
+    // ② 🔥🔥🔥 关键修改：在最后一条用户消息后插入强力约束指令
+    // -------------------------------------------------
+    const augmentedMessages: APIMessage[] = [...messages];
+
+    // 找到最后一条用户消息的索引
+    const lastUserMessageIndex = augmentedMessages
+      .map((msg, index) => (msg.role === 'user' ? index : -1))
+      .filter(index => index !== -1)
+      .pop();
+
+    // 在最后一条用户消息后插入绝对强力的格式约束
+    if (lastUserMessageIndex !== undefined && lastUserMessageIndex >= 0) {
+      const formatConstraint: APIMessage = {
+        role: 'user',
+        content: `[绝对重要提醒]
+
+你必须严格按照以下JSON格式回复，这是强制要求：
+
+{"reply":"你的回复内容（1-3句话）","options":["选项1","选项2","选项3"]}
+`,
+      };
+
+      // 在最后一条用户消息后插入约束指令
+      augmentedMessages.splice(lastUserMessageIndex + 1, 0, formatConstraint);
+    } else {
+      // 如果没有找到用户消息（理论上不应该发生），就添加到末尾
+      const formatConstraint: APIMessage = {
+        role: 'user',
+        content: `[格式约束] 必须严格按照JSON格式回复：{"reply":"...","options":["...","...","..."]}，options必须包含3个选项`,
+      };
+      augmentedMessages.push(formatConstraint);
+    }
+
+    // -------------------------------------------------
+    // ③ 读取服务商配置
     // -------------------------------------------------
     const providers = getProviders();
     if (providers.length === 0) {
@@ -336,17 +421,17 @@ export async function POST(req: NextRequest) {
     );
 
     // -------------------------------------------------
-    // ③ 多服务商抢答
+    // ④ 多服务商抢答（使用增强后的消息数组）
     // -------------------------------------------------
     const { readableStream, providerName } = await raceProviders(
       providers, 
-      messages, 
+      augmentedMessages,      // ✅ 使用增强版消息数组
       systemMessage, 
       req.signal
     );
 
     // -------------------------------------------------
-    // ④ 前端透传
+    // ⑤ 前端透传
     // -------------------------------------------------
     console.log(`🚀 开始流式传输 (${providerName})`);
 
@@ -371,5 +456,3 @@ export async function POST(req: NextRequest) {
     );
   }
 }
-
-
