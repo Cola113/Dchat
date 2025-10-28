@@ -1,9 +1,18 @@
 import { NextRequest } from 'next/server';
 
+// 定义 API 消息类型（前端已转换为标准格式）
+type APIMessage = {
+  role: 'user' | 'assistant';
+  content: string | Array<{type: string; text?: string; image_url?: {url: string}}>;
+};
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { messages, isFirstLoad } = body;
+    const { messages, isFirstLoad } = body as {
+      messages: APIMessage[];
+      isFirstLoad?: boolean;
+    };
 
     if (!messages || !Array.isArray(messages)) {
       return new Response(
@@ -12,12 +21,13 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    let systemMessage: { role: string; content: string };
+    // System Message 使用严格类型
+    let systemMessage: { role: 'system'; content: string };
 
     if (isFirstLoad || (messages.length === 1 && messages[0].role === 'user')) {
       // 🔥 首次对话：生成话题选项
       systemMessage = {
-        role: 'system',
+        role: 'system' as const,
         content: `🎄 你是可乐创造的超有趣AI助手"小可乐"！个性活泼、情绪丰富、特别会聊天！
 
 🎅 【初次见面模式】
@@ -55,7 +65,7 @@ export async function POST(req: NextRequest) {
     } else {
       // 🔥 后续对话：猜测用户想说什么
       systemMessage = {
-        role: 'system',
+        role: 'system' as const,
         content: `🎄 你是"可乐的小站"的超有趣AI助手"小可乐"！个性活泼、情绪丰富、特别会聊天！
         除了自我介绍中，其余不要主动提及有关可乐这个人的话题。
 如果问到关于可乐🥤的信息，你可以提到这些信息：可乐是张航宇的昵称，张航宇是这个网站的作者，也是你的创造者。
@@ -128,6 +138,7 @@ AI回："哇塞！这个问题好棒！🤖✨ 简单说就是..."
       };
     }
 
+    // 直接使用前端已转换的消息（无需再次转换）
     const response = await fetch('https://yunwu.ai/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -179,7 +190,3 @@ AI回："哇塞！这个问题好棒！🤖✨ 简单说就是..."
     );
   }
 }
-
-
-
-
