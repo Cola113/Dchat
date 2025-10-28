@@ -157,7 +157,7 @@ export async function POST(req: NextRequest) {
     if (apiConfigs.length === 0) {
       return new Response(
         JSON.stringify({ error: '未配置任何 API 服务商' }),
-        { status: 400, headers: { 'Content-Type': 'application/json' } }
+        { status: 400, headers: { '': 'application/json' } }
       );
     }
 
@@ -166,7 +166,7 @@ export async function POST(req: NextRequest) {
 
     return new Response(response.body, {
       headers: {
-        'Content-Type': 'text/event-stream',
+        '': 'text/event-stream',
         'Cache-Control': 'no-cache',
         'Connection': 'keep-alive',
         'X-Provider': response.provider,
@@ -277,7 +277,7 @@ async function makeAPIRequest(
     const response = await fetch(`${config.baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
+        'Content-Type': 'application/json; charset=utf-8',
         'Authorization': `Bearer ${config.key}`,
       },
       body: JSON.stringify({
@@ -313,4 +313,5 @@ async function makeAPIRequest(
     throw error;
   }
 }
+
 
