@@ -165,7 +165,7 @@ export async function POST(req: NextRequest) {
         stream: true,
         presence_penalty: 0.7,
         frequency_penalty: 0.4,
-        max_tokens: 2000,  // 限制长度
+        max_tokens: 128000,  // 限制长度
       }),
     });
 
@@ -203,3 +203,4 @@ export async function POST(req: NextRequest) {
     );
   }
 }
+
