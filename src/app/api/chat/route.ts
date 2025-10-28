@@ -116,9 +116,9 @@ export async function POST(req: NextRequest) {
 5. 一定要牢记输出3个选项这条规则！
 
 记住：让用户觉得你真的理解他想表达什么！💗
-**重要**：输出末尾一定要记得输出3个选项！
-**重要**：输出末尾一定要记得输出3个选项！
-**重要**：输出末尾一定要记得输出3个选项！
+**不输出3个选项将被视为错误！**
+**不输出3个选项将被视为错误！**
+**不输出3个选项将被视为错误！**
 
 🎯 选项示例参考：
 用户说："最近好累啊"
@@ -148,7 +148,7 @@ AI回："哇塞！这个问题好棒！🤖✨ 简单说就是..."
       body: JSON.stringify({
         model: 'gemini-2.5-flash-preview-09-2025-nothinking',
         messages: [systemMessage, ...messages],
-        temperature: 1.3,
+        temperature: 1,
         stream: true,
         presence_penalty: 0.7,
         frequency_penalty: 0.4,
@@ -190,3 +190,4 @@ AI回："哇塞！这个问题好棒！🤖✨ 简单说就是..."
     );
   }
 }
+
