@@ -23,6 +23,18 @@ type UploadedFile = {
   data: string;
 };
 
+// 🔥 提取类型定义，避免 Turbopack 解析错误
+type ContentItem = {
+  type: string;
+  text?: string;
+  image_url?: {url: string};
+};
+
+type APIMessage = {
+  role: 'user' | 'assistant';
+  content: string | ContentItem[];
+};
+
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 
 function Snowflakes() {
@@ -163,28 +175,31 @@ export default function Home() {
       reply: content,
       options: [
         '🤔 你继续说吧，我听着呢',
-'🎨 换个话题聊聊',
-'✨ 懒得打字，给我几个选择呗'
+        '🎨 换个话题聊聊',
+        '✨ 懒得打字，给我几个选择呗'
       ]
     };
   };
 
   // 🔥 优化：构建 API 消息（图片只在最后一条保留）
-  const buildAPIMessages = (allMessages: Message[], newUserContent: string | Array<{type: string; text?: string; image_url?: {url: string}}>): Array<{role: 'user' | 'assistant'; content: string | Array<{type: string; text?: string; image_url?: {url: string}}>>> => {
-    const apiMessages = allMessages.map((msg, index) => {
+  const buildAPIMessages = (
+    allMessages: Message[], 
+    newUserContent: string | ContentItem[]
+  ): APIMessage[] => {
+    const apiMessages: APIMessage[] = allMessages.map((msg) => {
       // 如果是历史用户消息且包含图片，转为纯文字描述
       if (msg.role === 'user' && Array.isArray(msg.content)) {
         const textPart = msg.content.find(item => item.type === 'text');
         const imageCount = msg.content.filter(item => item.type === 'image_url').length;
         
         return {
-          role: 'user' as const,
+          role: 'user',
           content: `${textPart?.text || '请分析这些图片'}\n[之前上传了 ${imageCount} 张图片]`
         };
       }
 
       return {
-        role: msg.role === 'ai' ? 'assistant' as const : 'user' as const,
+        role: msg.role === 'ai' ? 'assistant' : 'user',
         content: msg.content
       };
     });
@@ -388,7 +403,7 @@ export default function Home() {
     setOptionMessageId(null);
 
     // 🔥 构造用户消息内容
-    let userContent: string | Array<{type: string; text?: string; image_url?: {url: string}}>;
+    let userContent: string | ContentItem[];
 
     if (uploadedFiles.length > 0) {
       userContent = [
@@ -574,7 +589,7 @@ export default function Home() {
     });
   };
 
-  const renderMessageContent = (content: string | Array<{type: string; text?: string; image_url?: {url: string}}>, messageId?: string) => {
+  const renderMessageContent = (content: string | ContentItem[], messageId?: string) => {
     if (typeof content === 'string') {
       const shouldShowOptions = messageId === optionMessageId && suggestedOptions.length === 3;
       
