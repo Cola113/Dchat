@@ -151,43 +151,26 @@ export async function POST(req: NextRequest) {
       };
     }
 
-    const response = await fetch('https://yunwu.ai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.YUNWU_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: 'gemini-2.5-flash-preview-09-2025-nothinking',
-        messages: [systemMessage, ...messages],
-        response_format: { type: 'json_object' },  // 🔥 强制 JSON 输出
-        temperature: 1.0,  // 降低温度提高稳定性
-        stream: true,
-        presence_penalty: 0.7,
-        frequency_penalty: 0.4,
-        max_tokens: 128000,  // 限制长度
-      }),
-    });
+    // 🔥 多服务商配置（支持不同模型）
+    const apiConfigs = buildAPIConfigs();
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('API 错误:', response.status, errorText);
-      
+    if (apiConfigs.length === 0) {
       return new Response(
-        JSON.stringify({ 
-          error: '服务器返回错误',
-          details: errorText,
-          status: response.status 
-        }),
-        { status: response.status, headers: { 'Content-Type': 'application/json' } }
+        JSON.stringify({ error: '未配置任何 API 服务商' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
     }
+
+    // 🔥 并发请求竞速（强制自动取消）
+    const response = await raceAPIRequests(apiConfigs, [systemMessage, ...messages]);
 
     return new Response(response.body, {
       headers: {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
         'Connection': 'keep-alive',
+        'X-Provider': response.provider,
+        'X-Model': response.model,
       },
     });
 
@@ -204,3 +187,121 @@ export async function POST(req: NextRequest) {
   }
 }
 
+// 🔥 构建 API 配置（支持不同模型）
+function buildAPIConfigs(): Array<{
+  baseUrl: string;
+  key: string;
+  model: string;
+  provider: string;
+}> {
+  const configs = [];
+  
+  for (let i = 1; i <= 4; i++) {
+    const baseUrl = process.env[`BASE_URL_${i}`];
+    const key = process.env[`KEY_${i}`];
+    const model = process.env[`MODEL_${i}`];
+    
+    if (baseUrl && key && model) {
+      configs.push({
+        baseUrl,
+        key,
+        model,
+        provider: `服务商${i}`
+      });
+    }
+  }
+  
+  return configs;
+}
+
+// 🔥 并发请求竞速（绝对确保取消）
+async function raceAPIRequests(
+  configs: Array<{baseUrl: string; key: string; model: string; provider: string}>,
+  messages: APIMessage[]
+): Promise<{body: ReadableStream; provider: string; model: string}> {
+  
+  // 🚨 关键：为每个请求创建独立的 AbortController
+  const abortControllers = configs.map(() => new AbortController());
+  
+  // 🚨 关键：为每个请求传递取消信号
+  const requests = configs.map((config, index) => 
+    makeAPIRequest(config, messages, abortControllers[index].signal)
+      .then(response => ({ 
+        response, 
+        provider: config.provider, 
+        model: config.model, 
+        index
+      }))
+      .catch(error => ({ 
+        error, 
+        provider: config.provider, 
+        model: config.model, 
+        index
+      }))
+  );
+
+  // 🚨 等待最快完成的请求
+  const result = await Promise.race(requests);
+  
+  // 🚨 立即取消所有其他请求（不论成功还是失败）
+  console.log(`🚀 确定胜出者: ${result.provider} (${result.model})，立即取消其他请求！`);
+  
+  abortControllers.forEach((controller, index) => {
+    if (index !== result.index) {
+      console.log(`❌ 取消请求 ${configs[index].provider} (${configs[index].model})`);
+      controller.abort();
+    }
+  });
+  
+  if ('error' in result) {
+    console.warn(`❌ 胜出者失败: ${result.provider} (${result.model}):`, result.error);
+    const remainingConfigs = configs.filter((_, index) => index !== result.index);
+    if (remainingConfigs.length === 0) {
+      throw new Error('所有服务商请求都失败了');
+    }
+    // 🔄 递归调用继续竞速
+    return raceAPIRequests(remainingConfigs, messages);
+  }
+
+  // ✅ 成功情况
+  console.log(`🏆 最终胜出: ${result.provider} (模型: ${result.model})`);
+  
+  return {
+    body: result.response.body!,
+    provider: result.provider,
+    model: result.model
+  };
+}
+
+// 🔥 发起单个 API 请求（必须支持取消）
+async function makeAPIRequest(
+  config: {baseUrl: string; key: string; model: string; provider: string},
+  messages: APIMessage[],
+  signal?: AbortSignal
+): Promise<Response> {
+  const response = await fetch(`${config.baseUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${config.key}`,
+    },
+    body: JSON.stringify({
+      model: config.model,
+      messages,
+      response_format: { type: 'json_object' },
+      temperature: 1.0,
+      stream: true,
+      presence_penalty: 0.7,
+      frequency_penalty: 0.4,
+      max_tokens: 128000,
+    }),
+    signal: signal  // 🚨 必须传递取消信号
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`${config.provider} (${config.model}) API 错误: ${response.status} ${errorText}`);
+  }
+
+  return response;
+}
