@@ -373,28 +373,18 @@ export async function POST(req: NextRequest) {
     if (lastUserMessageIndex !== undefined && lastUserMessageIndex >= 0) {
       const formatConstraint: APIMessage = {
         role: 'user',
-        content: `[🚨 绝对重要提醒 🚨]
+        content: `[绝对重要提醒]
 
-你必须严格按照以下JSON格式回复，这是强制要求：
+你必须严格按照system和以下JSON格式回复，这是强制要求：
 
-{"reply":"你的回复内容（1-3句话）","options":["选项1","选项2","选项3"]}
+{"reply":"你的回复内容（1-3句话，带emoji和语气词）","options":["选项1","选项2","选项3"]}
 
-【严格规范】：
+【严格规范，遵循system】：
 1. reply字段：简短有趣回复，包含emoji和语气词
 2. options字段：必须是包含 exactly 3 个字符串的数组，不多不少
-3. 每个选项长度10-20字，用第一人称（我/我想/能不能）
+3. 每个选项长度10-20字，emoji开头，用第一人称（我/我想/能不能）
 4. 第一个字符必须是 {，最后一个字符必须是 }
-5. 绝对不要添加任何解释文字、markdown代码块或其他内容
-6. 必须是有效的JSON格式，可以直接被 JSON.parse() 解析
-
-🚫 错误示例：
-❌ 好的，这是回复：{"reply":"...","options":[...]}
-❌ \`\`\`json\n{"reply":"...","options":[...]}\n\`\`\`
-❌ {"reply":"...","options":["选项1","选项2"]}  // 只有2个选项
-❌ {"reply":"..."}  // 缺少options字段
-
-✅ 正确示例：
-{"reply":"哎呀呀！这个问题好有趣呢～😄✨","options":["我想深入了解一下这个话题","换个角度聊聊别的吧","给我讲个相关的小故事呗"]}
+5. 必须是有效的JSON格式，可以直接被 JSON.parse() 解析
 
 立即开始按格式回复，不要有任何其他输出！`,
       };
@@ -463,3 +453,4 @@ export async function POST(req: NextRequest) {
     );
   }
 }
+
