@@ -74,7 +74,7 @@ function buildPayload(model: string, messages: APIMessage[], system: APIMessage)
     messages: [system, ...messages],
     temperature: 1.3,
     stream: true,                               // 打开 SSE 流
-    //response_format: { type: "json_object" },
+    response_format: { type: "json_object" },   // ✅ 强制 JSON 输出模式
     presence_penalty: 0.7,
     frequency_penalty: 0.4,
     max_tokens: 32000,
@@ -172,33 +172,21 @@ async function raceProviders(
 ): Promise<RaceResult> {
   console.log(`🏁 开始竞速，共 ${providers.length} 个服务商:`, providers.map(p => p.name).join(', '));
 
-  // ✅ 保存每个服务商的 Promise 和 AbortController
-  type RaceEntry = {
-    provider: Provider;
-    promise: Promise<{ ok: true; result: RaceResult } | { ok: false }>;
-    abortControllerPromise: Promise<AbortController | null>;
-  };
+  // ✅ 定义结果类型
+  type RaceOutcome = 
+    | { ok: true; result: RaceResult; provider: Provider }
+    | { ok: false; provider: Provider };
 
-  const raceEntries: RaceEntry[] = providers.map((provider) => {
-    let capturedController: AbortController | null = null;
-    
-    const abortControllerPromise = new Promise<AbortController | null>((resolve) => {
-      // 这个 Promise 会在 requestStream 创建 AbortController 后 resolve
-      setTimeout(() => resolve(capturedController), 0);
-    });
-
-    const promise = requestStream(provider, messages, system, signal)
-      .then((result) => {
-        capturedController = result.abortController;
-        return { ok: true as const, result };
-      })
-      .catch((err) => {
+  // ✅ 保存每个服务商的 Promise
+  const raceEntries = providers.map((provider) => ({
+    provider,
+    promise: requestStream(provider, messages, system, signal)
+      .then((result): RaceOutcome => ({ ok: true, result, provider }))
+      .catch((err): RaceOutcome => {
         console.warn(`[${provider.name}] 竞速失败:`, err instanceof Error ? err.message : err);
-        return { ok: false as const };
-      });
-
-    return { provider, promise, abortControllerPromise };
-  });
+        return { ok: false, provider };
+      })
+  }));
 
   // ✅ 真正的竞速：找到第一个成功的立即返回
   const pending = raceEntries.map(entry => entry.promise);
@@ -210,10 +198,9 @@ async function raceProviders(
       // ✅ 找到第一个成功的，立即返回
       console.log(`✅ [${fastest.result.providerName}] 竞速获胜！`);
 
-      // ✅ 🔥 关键修复：立即取消所有其他正在进行的请求
+      // ✅ 🔥 立即取消所有其他正在进行的请求
       for (const entry of raceEntries) {
-        if (entry.provider.name !== fastest.result.providerName) {
-          // 立即尝试取消
+        if (entry.provider.name !== fastest.provider.name) {
           entry.promise.then((result) => {
             if (result.ok) {
               try {
@@ -232,10 +219,12 @@ async function raceProviders(
       return fastest.result;
     }
 
-    // 这个失败了，从待处理列表中移除
-    const idx = pending.indexOf(Promise.resolve(fastest) as any);
-    if (idx > -1) {
-      pending.splice(idx, 1);
+    // ✅ 修复：正确地从 pending 数组中移除已完成的 Promise
+    const failedIndex = pending.findIndex(p => 
+      raceEntries.some(entry => entry.promise === p)
+    );
+    if (failedIndex > -1) {
+      pending.splice(failedIndex, 1);
     } else {
       pending.shift();
     }
@@ -384,12 +373,30 @@ export async function POST(req: NextRequest) {
     if (lastUserMessageIndex !== undefined && lastUserMessageIndex >= 0) {
       const formatConstraint: APIMessage = {
         role: 'user',
-        content: `[绝对重要提醒]
+        content: `[🚨 绝对重要提醒 🚨]
 
 你必须严格按照以下JSON格式回复，这是强制要求：
 
 {"reply":"你的回复内容（1-3句话）","options":["选项1","选项2","选项3"]}
-`,
+
+【严格规范】：
+1. reply字段：简短有趣回复，包含emoji和语气词
+2. options字段：必须是包含 exactly 3 个字符串的数组，不多不少
+3. 每个选项长度10-20字，用第一人称（我/我想/能不能）
+4. 第一个字符必须是 {，最后一个字符必须是 }
+5. 绝对不要添加任何解释文字、markdown代码块或其他内容
+6. 必须是有效的JSON格式，可以直接被 JSON.parse() 解析
+
+🚫 错误示例：
+❌ 好的，这是回复：{"reply":"...","options":[...]}
+❌ \`\`\`json\n{"reply":"...","options":[...]}\n\`\`\`
+❌ {"reply":"...","options":["选项1","选项2"]}  // 只有2个选项
+❌ {"reply":"..."}  // 缺少options字段
+
+✅ 正确示例：
+{"reply":"哎呀呀！这个问题好有趣呢～😄✨","options":["我想深入了解一下这个话题","换个角度聊聊别的吧","给我讲个相关的小故事呗"]}
+
+立即开始按格式回复，不要有任何其他输出！`,
       };
 
       // 在最后一条用户消息后插入约束指令
@@ -398,7 +405,7 @@ export async function POST(req: NextRequest) {
       // 如果没有找到用户消息（理论上不应该发生），就添加到末尾
       const formatConstraint: APIMessage = {
         role: 'user',
-        content: `[格式约束] 必须严格按照JSON格式回复：{"reply":"...","options":["...","...","..."]}，options必须包含3个选项`,
+        content: `[🚨 格式约束 🚨] 必须严格按照JSON格式回复：{"reply":"...","options":["...","...","..."]}，options必须包含3个选项`,
       };
       augmentedMessages.push(formatConstraint);
     }
