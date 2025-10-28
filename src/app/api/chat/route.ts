@@ -72,13 +72,12 @@ function buildPayload(model: string, messages: APIMessage[], system: APIMessage)
   return {
     model,
     messages: [system, ...messages],
-    // ❌ 删除强制 JSON 格式（允许流式输出）
-    // response_format: { type: 'json_object' }, 
-    temperature: 1.0,
+    temperature: 1.3,
     stream: true,                               // 打开 SSE 流
+    response_format: { type: "json_object" },
     presence_penalty: 0.7,
     frequency_penalty: 0.4,
-    max_tokens: 2000,
+    max_tokens: 32000,
   };
 }
 
@@ -372,3 +371,4 @@ export async function POST(req: NextRequest) {
     );
   }
 }
+
