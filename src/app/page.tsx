@@ -162,9 +162,9 @@ export default function Home() {
     return {
       reply: content,
       options: [
-        '能详细说说吗？',
-        '换个话题聊聊',
-        '来点有趣的！'
+        '🤔 你继续说吧，我听着呢',
+'🎨 换个话题聊聊',
+'✨ 懒得打字，给我几个选择呗'
       ]
     };
   };
