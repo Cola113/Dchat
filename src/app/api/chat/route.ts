@@ -72,11 +72,9 @@ function buildPayload(model: string, messages: APIMessage[], system: APIMessage)
   return {
     model,
     messages: [system, ...messages],
-    temperature: 1.3,
+    temperature: 1,
     stream: true,                               // 打开 SSE 流
     response_format: { type: "json_object" },   // ✅ 强制 JSON 输出模式
-    presence_penalty: 0.7,
-    frequency_penalty: 0.4,
     max_tokens: 32000,
   };
 }
@@ -453,5 +451,6 @@ options 数组必须包含恰好3️⃣个选项
     );
   }
 }
+
 
 
