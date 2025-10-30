@@ -72,7 +72,7 @@ function buildPayload(model: string, messages: APIMessage[], system: APIMessage)
   return {
     model,
     messages: [system, ...messages],
-    temperature: 1,
+    temperature: 0.7,
     stream: true,                               // 打开 SSE 流
     response_format: { type: "json_object" },   // ✅ 强制 JSON 输出模式
     max_tokens: 32000,
@@ -393,7 +393,7 @@ options 数组必须包含恰好3️⃣个选项
       // 如果没有找到用户消息（理论上不应该发生），就添加到末尾
       const formatConstraint: APIMessage = {
         role: 'user',
-        content: `[🚨 格式约束 🚨] 必须严格按照JSON格式回复：{"reply":"...","options":["...","...","..."]}，options必须包含3个选项`,
+        content: `[🚨 格式约束 🚨] 必须严格按照JSON格式回复：{"reply":"...","options":["...","...","..."]},options必须包含3个选项`,
       };
       augmentedMessages.push(formatConstraint);
     }
@@ -451,6 +451,5 @@ options 数组必须包含恰好3️⃣个选项
     );
   }
 }
-
 
 
