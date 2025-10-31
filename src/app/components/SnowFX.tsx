@@ -14,7 +14,7 @@ type Flake = {
   glyph: string; // 字符
 };
 
-const GLYPHS = ['❄','❅','❆','✻','✼','❉','*','·','•'];
+const GLYPHS = ['❄', '❅', '❆', '✻', '✼', '❉', '*', '·', '•'];
 
 export default function SnowFX({ density = 1 }: { density?: number }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -28,18 +28,29 @@ export default function SnowFX({ density = 1 }: { density?: number }) {
     let windTarget = 0;    // 目标风速，缓动过去，形成“风阵”
     let last = performance.now();
 
-    const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1)); // 限 2 省电
+    // 限制 DPR 上限为 2，兼顾清晰度与性能
+    const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+
+    const getViewSize = () => {
+      // 用 BCR 读取 CSS 实际尺寸；为 0 时回退到窗口尺寸
+      const rect = canvas.getBoundingClientRect();
+      return {
+        w: rect.width || window.innerWidth,
+        h: rect.height || window.innerHeight,
+      };
+    };
+
     const resize = () => {
-      const w = canvas.clientWidth;
-      const h = canvas.clientHeight;
-      canvas.width = Math.floor(w * dpr);
-      canvas.height = Math.floor(h * dpr);
+      const { w, h } = getViewSize();
+      // 设置实际像素尺寸，并用 setTransform 将“世界坐标”保持为 CSS 像素
+      canvas.width = Math.max(1, Math.round(w * dpr));
+      canvas.height = Math.max(1, Math.round(h * dpr));
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     };
 
     const flakes: Flake[] = [];
     const makeFlake = (w: number, h: number): Flake => {
-      const z = Math.random();                  // 深度
+      const z = Math.random();
       const size = 8 + z * 18;                  // 8~26 px
       const vy = 35 + z * 95;                   // 35~130 px/s
       const amp = 10 + z * 70;                  // 左右摆幅 10~80
@@ -53,17 +64,16 @@ export default function SnowFX({ density = 1 }: { density?: number }) {
     };
 
     const ensureCount = () => {
-      const w = canvas.clientWidth;
-      const h = canvas.clientHeight;
-      // 基于面积自适应数量；density=1 在 390x844 约 120~150 片
-      const target = Math.round((w * h) / 22000 * density);
+      const { w, h } = getViewSize();
+      // 基于可视面积自适应数量；density=1 在手机上约 120~150 片
+      const target = Math.round(((w * h) / 22000) * density);
       while (flakes.length < target) flakes.push(makeFlake(w, h));
       if (flakes.length > target) flakes.length = target;
     };
 
     const scheduleWind = () => {
       // 每 6~12 秒改变一次风向与强度
-      windTarget = (-30 + Math.random() * 60); // -30~30 px/s
+      windTarget = -30 + Math.random() * 60; // -30~30 px/s
       setTimeout(scheduleWind, 6000 + Math.random() * 6000);
     };
 
@@ -71,32 +81,29 @@ export default function SnowFX({ density = 1 }: { density?: number }) {
       const dt = Math.min(0.033, (now - last) / 1000); // 限最大步长，避免切后台卡帧
       last = now;
 
-      const w = canvas.clientWidth;
-      const h = canvas.clientHeight;
-      ctx.clearRect(0, 0, w, h);
+      // 用绘制尺寸（CSS 像素坐标系）
+      const w = canvas.width / dpr;
+      const h = canvas.height / dpr;
 
-      // 轻柔合成，更亮一些
+      ctx.clearRect(0, 0, w, h);
       ctx.globalCompositeOperation = 'lighter';
 
       // 缓动风速
       wind += (windTarget - wind) * Math.min(1, dt * 0.6);
 
-      // 画三层：远->近，近景更亮更模糊
+      // 远->近绘制，近景更亮
       flakes.sort((a, b) => a.z - b.z);
       for (const f of flakes) {
         f.y += f.vy * dt;
-        // 左右摆动 + 风
         const x = f.x0 + Math.sin(now / 1000 * f.freq + f.phase) * f.amp + wind * f.z;
 
         // 出屏重置
         if (f.y - f.size > h + 20) {
-          // 重生在上方
           f.y = -20 - Math.random() * 100;
           f.x0 = Math.random() * w;
           f.phase = Math.random() * Math.PI * 2;
         }
 
-        // 视觉（亮度/模糊/透明度随深度）
         const alpha = 0.35 + f.z * 0.6;
         ctx.save();
         ctx.translate(x, f.y);
@@ -129,7 +136,7 @@ export default function SnowFX({ density = 1 }: { density?: number }) {
       raf = requestAnimationFrame(draw);
     }
 
-    // 监听
+    // 监听布局变化
     const ro = new ResizeObserver(onResize);
     ro.observe(canvas);
 
@@ -142,11 +149,13 @@ export default function SnowFX({ density = 1 }: { density?: number }) {
   return (
     <canvas
       ref={canvasRef}
-      className="snow-canvas"
       aria-hidden="true"
       style={{
         position: 'absolute',
         inset: 0,
+        width: '100%',     // 确保有 CSS 尺寸
+        height: '100%',
+        display: 'block',  // 避免内联元素缝隙/怪异尺寸
         pointerEvents: 'none',
         zIndex: 1
       }}
