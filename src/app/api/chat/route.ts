@@ -98,7 +98,7 @@ function buildPayload(model: string, messages: APIMessage[], system: APIMessage)
     temperature: 0.7,
     stream: true,                               // 打开 SSE 流
     response_format: { type: "json_object" },   // ✅ 保持不变
-    max_tokens: 32000,                          // ✅ 保持不变
+    //max_tokens: 32000,
   };
 }
 
