@@ -1,4 +1,3 @@
-// src/app/api/chat/route.ts
 import { NextRequest } from 'next/server';
 
 // ------------------------------------------------------------
@@ -50,7 +49,7 @@ type Provider = {
 type RaceResult = {
   readableStream: ReadableStream<Uint8Array>;
   abortController: AbortController;
-  providerName: string;      // 新增：记录成功的服务商名称
+  providerName: string;      // 记录成功的服务商名称
 };
 
 // ------------------------------------------------------------
@@ -71,7 +70,7 @@ function getProviders(): Provider[] {
       'Content-Type': 'application/json',
       'Accept':       'text/event-stream',
       'Cache-Control':'no-cache',
-      // 'Connection':   'keep-alive', // ❌ 删除：禁止在 fetch 中设置该头（HTTP/2/undici 不允许）
+      // 'Connection':   'keep-alive', // ❌ 不允许出现在 fetch 请求头（HTTP/2/undici）
       'Authorization': `Bearer ${apiKey}`,
     };
 
@@ -98,13 +97,76 @@ function buildPayload(model: string, messages: APIMessage[], system: APIMessage)
     messages: [system, ...messages],
     temperature: 0.7,
     stream: true,                               // 打开 SSE 流
-    response_format: { type: "json_object" },   // ✅ 强制 JSON 输出模式（保持不变）
-    //max_tokens: 32000,
+    response_format: { type: "json_object" },   // ✅ 保持不变
+    max_tokens: 32000,                          // ✅ 保持不变
   };
 }
 
 // ------------------------------------------------------------
-// 4️⃣ 单个服务商的流式请求（修复中止链路与 cancel 行为）
+// 4️⃣ 判定“有效 SSE 帧”的规则（胜出条件）
+// - 忽略注释/心跳（以 ":" 开头的行）
+// - 仅在拿到完整事件（空行分隔）后评估
+// - 至少含一行 data: ...；排除 data: [DONE]
+// - OpenAI 兼容：choices[0].delta.content 非空 或 存在 tool/function 调用
+// - 解析失败时，只要 data 文本非空也视为有效（兼容非标准提供商）
+// ------------------------------------------------------------
+function isMeaningfulSSEFrame(frame: string): boolean {
+  if (!frame) return false;
+
+  const lines = frame.split('\n').filter(l => l.length > 0);
+  const dataLines: string[] = [];
+
+  for (const line of lines) {
+    if (line.startsWith(':')) continue; // 注释/心跳
+    const m = /^data:\s?(.*)$/.exec(line);
+    if (m) dataLines.push(m[1]);
+  }
+
+  if (dataLines.length === 0) return false;
+
+  for (const payloadRaw of dataLines) {
+    const payload = (payloadRaw ?? '').trim();
+    if (!payload || payload === '[DONE]') continue;
+
+    try {
+      const j = JSON.parse(payload);
+      const choice = j?.choices?.[0];
+      const delta = choice?.delta ?? choice?.message ?? {};
+
+      // content 有内容
+      if (typeof delta?.content === 'string' && delta.content.length > 0) return true;
+
+      // OpenAI function call / tool_calls
+      // function_call: { name?: string, arguments?: string }
+      const fn = delta?.function_call ?? delta?.function;
+      if (fn && (typeof fn.name === 'string' || (typeof fn.arguments === 'string' && fn.arguments.length > 0))) {
+        return true;
+      }
+
+      // tool_calls: [{ function: { name, arguments } }]
+      const toolCalls = Array.isArray(delta?.tool_calls) ? delta.tool_calls : undefined;
+      if (toolCalls && toolCalls.length > 0) {
+        const hasInfo = toolCalls.some((t: unknown) => {
+          const func = (t as { function?: { name?: string; arguments?: string } }).function;
+          if (!func) return false;
+          return typeof func.name === 'string' || (typeof func.arguments === 'string' && func.arguments.length > 0);
+        });
+        if (hasInfo) return true;
+      }
+    } catch {
+      // 非 JSON：只要有非空文本就算有效
+      return true;
+    }
+  }
+
+  return false;
+}
+
+// ------------------------------------------------------------
+// 5️⃣ 单个服务商的流式请求
+// - 修复中止链路与 cancel 行为
+// - SSE 边界：归一化换行，按空行切帧，收尾补空行
+// - 首个“有效帧”才 resolve，作为竞速胜出条件
 // ------------------------------------------------------------
 async function requestStream(
   provider: Provider,
@@ -112,86 +174,116 @@ async function requestStream(
   system: APIMessage,
   signal?: AbortSignal
 ): Promise<RaceResult> {
-  // 始终使用本地 controller 驱动 fetch；外部 signal 仅做联动
   const abortController = new AbortController();
   const unlink = linkSignals(signal, abortController);
 
   const payload = buildPayload(provider.model, messages, system);
   const endpoint = `${provider.baseUrl}/v1/chat/completions`;
-  
-  try {
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: provider.headers,
-      body: JSON.stringify(payload),
-      signal: abortController.signal,
-    });
 
-    if (!res.ok || !res.body) {
-      const body = await res.text().catch(() => '（无可读错误信息）');
-      throw new Error(`[${provider.name}] HTTP ${res.status} – ${body}`);
-    }
+  // 我们在首个有效帧出现时才 resolve 这个 Promise
+  return await new Promise<RaceResult>(async (resolve, reject) => {
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: provider.headers,
+        body: JSON.stringify(payload),
+        signal: abortController.signal,
+      });
 
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder('utf-8', { fatal: false });
-    let buffer = '';
+      if (!res.ok || !res.body) {
+        const bodyTxt = await res.text().catch(() => '（无可读错误信息）');
+        reject(new Error(`[${provider.name}] HTTP ${res.status} – ${bodyTxt}`));
+        return;
+      }
 
-    // 透传原始 SSE（按你的要求：不修改拼块边界逻辑）
-    const outStream = new ReadableStream<Uint8Array>({
-      start(controller) {
-        const pump = async () => {
-          try {
-            while (true) {
-              const { value, done } = await reader.read();
-              if (done) {
-                if (buffer.trim()) {
-                  controller.enqueue(new TextEncoder().encode(buffer + '\n\n'));
-                }
-                unlink();
-                controller.close();
-                return;
-              }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder('utf-8', { fatal: false });
+      const encoder = new TextEncoder();
 
-              buffer += decoder.decode(value, { stream: true });
-              let idx: number;
-              while ((idx = buffer.indexOf('\n\n')) !== -1) {
-                const chunk = buffer.slice(0, idx + 2);
-                buffer = buffer.slice(idx + 2);
-                controller.enqueue(new TextEncoder().encode(chunk));
+      let buffer = '';
+      let settledWinner = false;
+
+      const outStream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          const processBuffer = () => {
+            // 统一换行，避免 \r\n / \r 导致边界丢失
+            if (buffer.indexOf('\r') !== -1) {
+              buffer = buffer.replace(/\r\n?/g, '\n');
+            }
+            let idx: number;
+            while ((idx = buffer.indexOf('\n\n')) !== -1) {
+              const frame = buffer.slice(0, idx); // 完整帧（不含分隔）
+              buffer = buffer.slice(idx + 2);     // 移除分隔
+
+              // 透传原帧（+ 分隔）
+              controller.enqueue(encoder.encode(frame + '\n\n'));
+
+              // 判定是否首个有效帧
+              if (!settledWinner && isMeaningfulSSEFrame(frame)) {
+                settledWinner = true;
+                resolve({
+                  readableStream: outStream,
+                  abortController,
+                  providerName: provider.name,
+                });
               }
             }
-          } catch (err) {
-            console.error(`[${provider.name}] 流读取错误:`, err);
-            try { unlink(); } catch {}
-            try { controller.close(); } catch {}
-          }
-        };
+          };
 
-        pump();
-      },
-      cancel() {
-        // 客户端断开 / 上游中止：真正取消读取与网络请求
-        try { reader.cancel(); } catch {}
-        try { abortController.abort(); } catch {}
-        try { unlink(); } catch {}
-      },
-    });
+          const pump = async () => {
+            try {
+              while (true) {
+                const { value, done } = await reader.read();
 
-    return { 
-      readableStream: outStream, 
-      abortController,
-      providerName: provider.name 
-    };
-  } catch (err) {
-    console.error(`[${provider.name}] 请求失败:`, err instanceof Error ? err.message : err);
-    try { unlink(); } catch {}
-    throw err;
-  }
+                if (done) {
+                  // 流结束：若有残留且未以空行结束，补一个空行形成合法 SSE 事件
+                  if (buffer.length > 0) {
+                    if (buffer.indexOf('\r') !== -1) {
+                      buffer = buffer.replace(/\r\n?/g, '\n');
+                    }
+                    const endsWithBlank = buffer.endsWith('\n\n');
+                    controller.enqueue(encoder.encode(endsWithBlank ? buffer : buffer + '\n\n'));
+                    buffer = '';
+                  }
+                  // 若直到结束都没出现有效帧，视为失败
+                  if (!settledWinner) {
+                    reject(new Error(`[${provider.name}] 流结束但未产生有效 SSE 帧`));
+                  }
+                  try { unlink(); } catch {}
+                  controller.close();
+                  return;
+                }
+
+                buffer += decoder.decode(value, { stream: true });
+                processBuffer();
+              }
+            } catch (err) {
+              // 中止/网络错误等
+              if (!settledWinner) {
+                reject(err instanceof Error ? err : new Error(String(err)));
+              }
+              try { unlink(); } catch {}
+              try { controller.close(); } catch {}
+            }
+          };
+
+          pump();
+        },
+        cancel() {
+          try { reader.cancel(); } catch {}
+          try { abortController.abort(); } catch {}
+          try { unlink(); } catch {}
+        },
+      });
+    } catch (err) {
+      reject(err instanceof Error ? err : new Error(String(err)));
+    }
+  });
 }
 
 // ------------------------------------------------------------
-// 5️⃣ 多服务商抢答（✅ 正确的事件驱动竞速 + 6 秒超时 + 精准取消）
-// 说明：赢家仍按“先握手成功（fetch ok）”判定，不改为“首个字节”
+// 6️⃣ 多服务商抢答（事件驱动竞速 + 6 秒超时 + 精准取消）
+// 胜出条件：首个产生“有效 SSE 帧”的服务商
 // ------------------------------------------------------------
 async function raceProviders(
   providers: Provider[],
@@ -201,11 +293,9 @@ async function raceProviders(
 ): Promise<RaceResult> {
   console.log(`🏁 开始竞速，共 ${providers.length} 个服务商:`, providers.map(p => p.name).join(', '));
 
-  // 每个服务商一个独立的控制器，联动到外部信号（如客户端断开）
   const perControllers = providers.map(() => new AbortController());
   const unlinks = perControllers.map(c => linkSignals(outerSignal, c));
 
-  // 6 秒墙钟超时：到点中止所有 provider
   const timeoutId = setTimeout(() => {
     console.warn(`⏱️ 竞速超时：超过 ${RACE_TIMEOUT_MS}ms 未有可用响应，全部取消`);
     perControllers.forEach(c => { try { c.abort(); } catch {} });
@@ -216,7 +306,6 @@ async function raceProviders(
     unlinks.forEach(fn => { try { fn(); } catch {} });
   };
 
-  // 启动所有请求
   type Outcome =
     | { ok: true; result: RaceResult; index: number }
     | { ok: false; error: unknown; index: number };
@@ -227,7 +316,6 @@ async function raceProviders(
       .catch((error): Outcome => ({ ok: false, error, index }))
   );
 
-  // 事件驱动：第一个成功即返回；全部失败则抛错
   return await new Promise<RaceResult>((resolve, reject) => {
     let settled = false;
     let remaining = attempts.length;
@@ -247,7 +335,7 @@ async function raceProviders(
           });
 
           clearAll();
-          console.log(`✅ [${providers[outcome.index].name}] 竞速获胜！`);
+          console.log(`✅ [${providers[outcome.index].name}] 竞速获胜（首个有效 SSE 帧）！`);
           resolve(outcome.result);
         } else {
           console.warn(
@@ -277,7 +365,7 @@ async function raceProviders(
 }
 
 // ------------------------------------------------------------
-// 6️⃣ 带重试的竞速（全部失败或 6 秒超时则自动重试）
+// 7️⃣ 带重试的竞速（全部失败或 6 秒超时则自动重试）
 // ------------------------------------------------------------
 async function raceWithRetry(
   providers: Provider[],
@@ -308,7 +396,7 @@ async function raceWithRetry(
 }
 
 // ------------------------------------------------------------
-// 7️⃣ 主路由（POST /api/chat）
+// 8️⃣ 主路由（POST /api/chat）
 // ------------------------------------------------------------
 export async function POST(req: NextRequest) {
   try {
@@ -440,17 +528,15 @@ export async function POST(req: NextRequest) {
     }
 
     // -------------------------------------------------
-    // ② 🔥🔥🔥 关键修改：在最后一条用户消息后插入强力约束指令
-    // -------------------------------------------------
+    // ② 在最后一条用户消息后插入强力约束指令（保持你的原逻辑）
+// -------------------------------------------------
     const augmentedMessages: APIMessage[] = [...messages];
 
-    // 找到最后一条用户消息的索引
     const lastUserMessageIndex = augmentedMessages
       .map((msg, index) => (msg.role === 'user' ? index : -1))
       .filter(index => index !== -1)
       .pop();
 
-    // 在最后一条用户消息后插入绝对强力的格式约束
     if (lastUserMessageIndex !== undefined && lastUserMessageIndex >= 0) {
       const formatConstraint: APIMessage = {
         role: 'user',
@@ -470,10 +556,8 @@ export async function POST(req: NextRequest) {
 立即开始按格式回复，不要遗漏JSON任何参数（"reply"和"options"）！`,
       };
 
-      // 在最后一条用户消息后插入约束指令
       augmentedMessages.splice(lastUserMessageIndex + 1, 0, formatConstraint);
     } else {
-      // 如果没有找到用户消息（理论上不应该发生），就添加到末尾
       const formatConstraint: APIMessage = {
         role: 'user',
         content: `[🚨 格式约束 🚨] 必须严格按照JSON格式回复：{"reply":"...","options":["...","...","..."]}，options必须包含3个选项`,
@@ -499,7 +583,7 @@ export async function POST(req: NextRequest) {
     );
 
     // -------------------------------------------------
-    // ④ 多服务商抢答（带自动重试 + 6 秒总超时）
+    // ④ 多服务商抢答（自动重试 + 6 秒总超时；胜出=首个有效 SSE 帧）
     // -------------------------------------------------
     const { readableStream, providerName } = await raceWithRetry(
       providers, 
