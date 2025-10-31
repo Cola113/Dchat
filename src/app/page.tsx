@@ -13,6 +13,7 @@ type Message = {
   role: 'user' | 'ai';
   content: string | Array<{type: string; text?: string; image_url?: {url: string}}>;
   timestamp: number;
+  provider?: string; // 新增：记录使用的模型
 };
 
 type WinterEmoji = { id: string; x: number; y: number; emoji: string; anim: number };
@@ -92,7 +93,6 @@ export default function Home() {
   const abortControllerRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // 🔥 优化：流式处理 + 实时提取 reply 字段
   const processStreamResponse = async (
     reader: ReadableStreamDefaultReader<Uint8Array>,
     onChunk: (displayContent: string) => void,
@@ -123,7 +123,6 @@ export default function Home() {
             if (content) {
               fullContent += content;
               
-              // 🔥 尝试实时提取 reply 字段（隐藏 JSON 结构）
               try {
                 const partialMatch = fullContent.match(/"reply"\s*:\s*"((?:[^"\\]|\\.)*)"/);
                 if (partialMatch) {
@@ -132,14 +131,11 @@ export default function Home() {
                     .replace(/\\"/g, '"')
                     .replace(/\\\\/g, '\\');
                   
-                  // 显示已解析的 reply 部分
                   onChunk(displayContent);
                 } else {
-                  // 如果还没解析到 reply，显示原始内容
                   onChunk(fullContent);
                 }
               } catch {
-                // 解析失败时显示原始内容
                 onChunk(fullContent);
               }
             }
@@ -153,7 +149,6 @@ export default function Home() {
     onComplete(fullContent);
   };
 
-  // JSON 格式解析（保持原有逻辑）
   const parseJSONResponse = (content: string): { reply: string; options: string[] } => {
     try {
       const parsed = JSON.parse(content);
@@ -251,16 +246,17 @@ export default function Home() {
 
       if (!response.ok) throw new Error('获取选项失败');
 
+      const providerUsed = response.headers.get('X-Provider-Used') || '未知模型';
+
       const reader = response.body?.getReader();
       if (!reader) throw new Error('无法读取响应');
 
       await processStreamResponse(
         reader,
         (displayContent) => {
-          // 🎨 流式显示提取的 reply 内容
           setMessages(prev => prev.map(msg => 
             msg.id === initialMessageId 
-              ? { ...msg, content: displayContent } 
+              ? { ...msg, content: displayContent, provider: providerUsed } 
               : msg
           ));
         },
@@ -269,7 +265,7 @@ export default function Home() {
           
           setMessages(prev => prev.map(msg => 
             msg.id === initialMessageId 
-              ? { ...msg, content: reply } 
+              ? { ...msg, content: reply, provider: providerUsed } 
               : msg
           ));
           
@@ -476,6 +472,8 @@ export default function Home() {
        throw new Error('请求失败');
      }
 
+    const providerUsed = response.headers.get('X-Provider-Used') || '未知模型';
+
      const reader = response.body?.getReader();
      if (!reader) {
        throw new Error('无法读取响应流');
@@ -486,14 +484,14 @@ export default function Home() {
      await processStreamResponse(
        reader,
        (displayContent) => {
-         // 🎨 流式显示提取的 reply 内容
          if (!hasStarted) {
            if (!hasFiles) {
              const aiMessage: Message = {
                id: aiMessageId,
                role: 'ai',
                content: displayContent,
-               timestamp: Date.now()
+               timestamp: Date.now(),
+               provider: providerUsed
              };
              setMessages(prev => [...prev, aiMessage]);
            }
@@ -503,7 +501,7 @@ export default function Home() {
          setMessages(prev => 
            prev.map(msg => 
              msg.id === aiMessageId 
-               ? { ...msg, content: displayContent }
+               ? { ...msg, content: displayContent, provider: providerUsed } 
                : msg
            )
          );
@@ -513,7 +511,7 @@ export default function Home() {
            setMessages(prev => 
              prev.map(msg => 
                msg.id === aiMessageId 
-                 ? { ...msg, content: '抱歉，我无法生成回复。' }
+                 ? { ...msg, content: '抱歉，我无法生成回复。', provider: providerUsed } 
                  : msg
              )
            );
@@ -523,7 +521,7 @@ export default function Home() {
            setMessages(prev => 
              prev.map(msg => 
                msg.id === aiMessageId 
-                 ? { ...msg, content: reply }
+                 ? { ...msg, content: reply, provider: providerUsed } 
                  : msg
              )
            );
@@ -554,7 +552,7 @@ export default function Home() {
        setMessages(prev => 
          prev.map(msg => 
            msg.id === aiMessageId 
-             ? { ...msg, content: '抱歉，连接服务器失败，请稍后再试。' }
+             ? { ...msg, content: '抱歉，连接服务器失败，请稍后再试。' } 
              : msg
          )
        );
@@ -714,13 +712,20 @@ export default function Home() {
                  '🐮'
                )}
              </div>
-             <div className="bubble">
-               {message.role === 'ai' ? (
-                 renderMessageContent(message.content, message.id)
-               ) : (
-                 renderMessageContent(message.content)
-               )}
-             </div>
+             <div className="bubble-wrapper"> 
+                <div className="bubble">
+                  {message.role === 'ai' ? (
+                    renderMessageContent(message.content, message.id)
+                  ) : (
+                    renderMessageContent(message.content)
+                  )}
+                </div>
+                {message.role === 'ai' && message.provider && (
+                  <div className="model-info">
+                    🤖 {message.provider}
+                  </div>
+                )}
+              </div>
            </div>
          ))}
          
