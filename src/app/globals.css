@@ -206,6 +206,12 @@ body {
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
 }
 
+@media (max-width: 640px) {
+  .chat-container {
+    max-width: 100%;
+  }
+}
+
 @media (min-width: 768px) {
   .chat-container {
     border-left: 1px solid rgba(255, 255, 255, 0.3);
@@ -326,21 +332,57 @@ body {
   color: #991b1b;
 }
 
+.bubble-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.model-info {
+  font-size: 0.75rem;
+  color: rgba(22, 163, 74, 0.6);
+  padding: 2px 8px;
+  text-align: left;
+  font-style: italic;
+  opacity: 0.7;
+  transition: opacity 0.3s;
+}
+
+.model-info:hover {
+  opacity: 1;
+}
+
+.message.user .model-info {
+  color: rgba(220, 38, 38, 0.6);
+  text-align: right;
+}
+
+
 /* 输入区域 */
 .input-area {
   flex-shrink: 0;
-  padding: 6px 20px;
+  padding: 8px 12px; /* 减小左右padding */
   background: rgba(255, 255, 255, 0.3);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   border-top: 1px solid rgba(34, 197, 94, 0.3);
   display: flex;
+  flex-wrap: nowrap; /* 强制不换行 */
   gap: 6px;
   align-items: flex-end;
+  min-height: 60px; /* 确保最小高度 */
+}
+
+@media (max-width: 640px) {
+  .input-area {
+    padding: 6px 8px; /* 进一步减小padding */
+    gap: 4px; /* 减小间距 */
+  }
 }
 
 .input-box {
   flex: 1;
+  min-width: 0; /* 关键：允许缩小 */
   padding: 8px 16px;
   border-radius: 24px;
   border: 1px solid rgba(22, 163, 74, 0.3);
@@ -354,12 +396,18 @@ body {
   resize: none;
 }
 
+@media (max-width: 640px) {
+  .input-box {
+    padding: 6px 12px;
+    font-size: 0.9rem;
+  }
+}
+
 .input-box:focus {
   border-color: rgba(220, 38, 38, 0.5);
   box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.1);
 }
 
-/* 发送按钮 */
 .send-button {
   padding: 8px 24px;
   border-radius: 24px;
@@ -373,6 +421,15 @@ body {
   box-shadow: 0 4px 12px rgba(220, 38, 38, 0.3);
   white-space: nowrap;
   flex-shrink: 0;
+  min-width: 60px; /* 确保最小宽度 */
+}
+
+@media (max-width: 640px) {
+  .send-button {
+    padding: 8px 16px; /* 减小padding */
+    font-size: 0.85rem;
+    min-width: 50px;
+  }
 }
 
 .send-button:hover {
@@ -389,6 +446,101 @@ body {
   cursor: not-allowed;
   transform: none;
 }
+
+.upload-button {
+  flex-shrink: 0;
+  padding: 8px 18px;
+  border-radius: 24px;
+  border: none;
+  background: linear-gradient(135deg, #dc2626 0%, #ef4444 50%, #16a34a 100%);
+  color: white;
+  font-weight: 600;
+  font-size: 0.95rem;
+  cursor: pointer;
+  transition: all 0.3s;
+  box-shadow: 0 4px 12px rgba(220, 38, 38, 0.3);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  white-space: nowrap;
+  min-width: 50px; /* 确保最小宽度 */
+}
+
+@media (max-width: 640px) {
+  .upload-button {
+    padding: 8px 12px; /* 减小padding */
+    font-size: 0.9rem;
+    min-width: 44px; /* 触摸友好的最小尺寸 */
+  }
+}
+
+.upload-button:hover:not(:disabled) {
+  transform: translateY(-2px) scale(1.05);
+  box-shadow: 0 6px 20px rgba(220, 38, 38, 0.5);
+  background: linear-gradient(135deg, #ef4444 0%, #dc2626 50%, #22c55e 100%);
+}
+
+.upload-button:active:not(:disabled) {
+  transform: translateY(0) scale(0.98);
+}
+
+.upload-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.input-wrapper {
+  flex: 1;
+  min-width: 0; /* 关键：允许缩小 */
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+@media (max-width: 640px) {
+  .input-wrapper {
+    gap: 6px;
+  }
+}
+
+/* 已上传文件预览 */
+.uploaded-files {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  max-width: 100%; /* 确保不超出 */
+  overflow-x: auto; /* 允许横向滚动 */
+}
+
+@media (max-width: 640px) {
+  .uploaded-files {
+    gap: 6px;
+  }
+}
+
+.file-preview {
+  position: relative;
+  width: 80px;
+  height: 80px;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 2px solid rgba(34, 197, 94, 0.3);
+  background: rgba(255, 255, 255, 0.5);
+  flex-shrink: 0; /* 防止缩小 */
+}
+
+@media (max-width: 640px) {
+  .file-preview {
+    width: 60px;
+    height: 60px;
+  }
+}
+
+.file-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
 
 /* 打字动画 */
 .typing {
@@ -618,36 +770,6 @@ body {
   overflow-y: hidden;
 }
 
-/* 输入包装器 */
-.input-wrapper {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-/* 已上传文件预览 */
-.uploaded-files {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.file-preview {
-  position: relative;
-  width: 80px;
-  height: 80px;
-  border-radius: 12px;
-  overflow: hidden;
-  border: 2px solid rgba(34, 197, 94, 0.3);
-  background: rgba(255, 255, 255, 0.5);
-}
-
-.file-preview img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
 
 /* 删除文件按钮 */
 .remove-file {
@@ -672,39 +794,6 @@ body {
 .remove-file:hover {
   background: rgba(220, 38, 38, 1);
   transform: scale(1.1);
-}
-
-/* 上传按钮 */
-.upload-button {
-  flex-shrink: 0;
-  padding: 8px 18px;  /* 👈 和发送按钮一致 */
-  border-radius: 24px;
-  border: none;
-  background: linear-gradient(135deg, #dc2626 0%, #ef4444 50%, #16a34a 100%);
-  color: white;
-  font-weight: 600;
-  font-size: 0.95rem;
-  cursor: pointer;
-  transition: all 0.3s;
-  box-shadow: 0 4px 12px rgba(220, 38, 38, 0.3);
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
-  white-space: nowrap;
-}
-
-.upload-button:hover:not(:disabled) {
-  transform: translateY(-2px) scale(1.05);
-  box-shadow: 0 6px 20px rgba(220, 38, 38, 0.5);
-  background: linear-gradient(135deg, #ef4444 0%, #dc2626 50%, #22c55e 100%);
-}
-
-.upload-button:active:not(:disabled) {
-  transform: translateY(0) scale(0.98);
-}
-
-.upload-button:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-  transform: none;
 }
 
 /* 消息中的上传图片 */
@@ -808,4 +897,3 @@ body {
     transform: translateX(0);
   }
 }
-
