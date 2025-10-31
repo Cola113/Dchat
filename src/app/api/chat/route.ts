@@ -2,36 +2,41 @@
 import { NextRequest } from 'next/server';
 
 // ------------------------------------------------------------
-// 1️⃣ 类型定义（已加入 'system' 角色）
+// 1️⃣ 配置常量
+// ------------------------------------------------------------
+const RACE_TIMEOUT_MS = 6000;  // 单次竞速超时时间：6秒
+const MAX_RETRY_COUNT = 3;     // 最大重试次数
+const RETRY_DELAY_MS = 50;    // 重试间隔：500ms
+
+// ------------------------------------------------------------
+// 2️⃣ 类型定义
 // ------------------------------------------------------------
 type ContentPart =
   | { type: 'text'; text?: string }
   | { type: 'image_url'; image_url?: { url: string } };
 
 type APIMessage = {
-  /** 支持 system、user、assistant 三种角色 */
   role: 'system' | 'user' | 'assistant';
-  /** 文本或复合内容块（与 OpenAI‑ChatCompletions 完全兼容） */
   content: string | ContentPart[];
 };
 
 type Provider = {
-  id: string;                // "1" .. "4"
-  name: string;              // "Provider-1" .. "Provider-4"
-  baseUrl: string;           // 去掉尾斜杠的 BASE_URL_*
-  apiKey: string;            // KEY_*
-  model: string;             // MODEL_*
+  id: string;
+  name: string;
+  baseUrl: string;
+  apiKey: string;
+  model: string;
   headers: Record<string, string>;
 };
 
 type RaceResult = {
   readableStream: ReadableStream<Uint8Array>;
   abortController: AbortController;
-  providerName: string;      // 新增：记录成功的服务商名称
+  providerName: string;
 };
 
 // ------------------------------------------------------------
-// 2️⃣ 环境变量读取（1~4 组，缺省则自动跳过）
+// 3️⃣ 环境变量读取
 // ------------------------------------------------------------
 function getProviders(): Provider[] {
   const providers: Provider[] = [];
@@ -42,7 +47,7 @@ function getProviders(): Provider[] {
     const apiKey  = (process.env[`KEY_${i}`]    || '').trim();
     const model   = (process.env[`MODEL_${i}`]   || '').trim();
 
-    if (!baseUrl || !apiKey || !model) continue;   // 缺省即跳过
+    if (!baseUrl || !apiKey || !model) continue;
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -55,7 +60,7 @@ function getProviders(): Provider[] {
     providers.push({
       id: String(i),
       name: `Provider-${i}`,
-      baseUrl: baseUrl.replace(/\/+$/, ''), // 去掉尾斜杠
+      baseUrl: baseUrl.replace(/\/+$/, ''),
       apiKey,
       model,
       headers,
@@ -66,21 +71,21 @@ function getProviders(): Provider[] {
 }
 
 // ------------------------------------------------------------
-// 3️⃣ 统一请求体（OpenAI‑ChatCompletions 兼容字段）
+// 4️⃣ 统一请求体
 // ------------------------------------------------------------
 function buildPayload(model: string, messages: APIMessage[], system: APIMessage) {
   return {
     model,
     messages: [system, ...messages],
     temperature: 0.7,
-    stream: true,                               // 打开 SSE 流
-    response_format: { type: "json_object" },   // ✅ 强制 JSON 输出模式
+    stream: true,
+    response_format: { type: "json_object" },
     max_tokens: 32000,
   };
 }
 
 // ------------------------------------------------------------
-// 4️⃣ 单个服务商的流式请求
+// 5️⃣ 单个服务商的流式请求
 // ------------------------------------------------------------
 async function requestStream(
   provider: Provider,
@@ -160,7 +165,18 @@ async function requestStream(
 }
 
 // ------------------------------------------------------------
-// 5️⃣ 多服务商抢答（✅ 完美实现：立即取消其他请求）
+// 6️⃣ 创建超时Promise
+// ------------------------------------------------------------
+function createTimeoutPromise(ms: number): Promise<never> {
+  return new Promise((_, reject) => {
+    setTimeout(() => {
+      reject(new Error(`⏱️ 竞速超时：超过 ${ms}ms 未响应`));
+    }, ms);
+  });
+}
+
+// ------------------------------------------------------------
+// 7️⃣ 多服务商抢答（带超时控制）
 // ------------------------------------------------------------
 async function raceProviders(
   providers: Provider[],
@@ -170,70 +186,125 @@ async function raceProviders(
 ): Promise<RaceResult> {
   console.log(`🏁 开始竞速，共 ${providers.length} 个服务商:`, providers.map(p => p.name).join(', '));
 
-  // ✅ 定义结果类型
   type RaceOutcome = 
     | { ok: true; result: RaceResult; provider: Provider }
-    | { ok: false; provider: Provider };
+    | { ok: false; provider: Provider; error: Error };
 
-  // ✅ 保存每个服务商的 Promise
-  const raceEntries = providers.map((provider) => ({
-    provider,
-    promise: requestStream(provider, messages, system, signal)
-      .then((result): RaceOutcome => ({ ok: true, result, provider }))
-      .catch((err): RaceOutcome => {
-        console.warn(`[${provider.name}] 竞速失败:`, err instanceof Error ? err.message : err);
-        return { ok: false, provider };
-      })
-  }));
+  // 保存每个服务商的 AbortController，用于超时时取消
+  const abortControllers = new Map<string, AbortController>();
 
-  // ✅ 真正的竞速：找到第一个成功的立即返回
+  const raceEntries = providers.map((provider) => {
+    const controller = new AbortController();
+    abortControllers.set(provider.name, controller);
+
+    return {
+      provider,
+      promise: requestStream(provider, messages, system, controller.signal)
+        .then((result): RaceOutcome => ({ ok: true, result, provider }))
+        .catch((err): RaceOutcome => {
+          console.warn(`[${provider.name}] 竞速失败:`, err instanceof Error ? err.message : err);
+          return { ok: false, provider, error: err };
+        })
+    };
+  });
+
   const pending = raceEntries.map(entry => entry.promise);
 
-  while (pending.length > 0) {
-    const fastest = await Promise.race(pending);
+  // ✅ 添加超时控制
+  const timeoutPromise = createTimeoutPromise(RACE_TIMEOUT_MS);
+  
+  try {
+    // 竞速：第一个成功的 vs 超时
+    while (pending.length > 0) {
+      const fastest = await Promise.race([...pending, timeoutPromise]);
 
-    if (fastest.ok) {
-      // ✅ 找到第一个成功的，立即返回
-      console.log(`✅ [${fastest.result.providerName}] 竞速获胜！`);
+      if (fastest.ok) {
+        console.log(`✅ [${fastest.result.providerName}] 竞速获胜！`);
 
-      // ✅ 🔥 立即取消所有其他正在进行的请求
-      for (const entry of raceEntries) {
-        if (entry.provider.name !== fastest.provider.name) {
-          entry.promise.then((result) => {
-            if (result.ok) {
-              try {
-                console.log(`🛑 取消服务商 [${entry.provider.name}] 的请求`);
-                result.result.abortController.abort();
-              } catch (err) {
-                console.warn(`[${entry.provider.name}] 取消时出错:`, err);
-              }
+        // 立即取消所有其他请求
+        for (const [name, controller] of abortControllers.entries()) {
+          if (name !== fastest.provider.name) {
+            try {
+              console.log(`🛑 取消服务商 [${name}] 的请求`);
+              controller.abort();
+            } catch (err) {
+              console.warn(`[${name}] 取消时出错:`, err);
             }
-          }).catch(() => {
-            // 已经失败的请求，忽略
-          });
+          }
         }
+
+        return fastest.result;
       }
 
-      return fastest.result;
+      // 移除失败的请求
+      const failedIndex = pending.findIndex(p => 
+        raceEntries.some(entry => entry.promise === p)
+      );
+      if (failedIndex > -1) {
+        pending.splice(failedIndex, 1);
+      } else {
+        pending.shift();
+      }
     }
-
-    // ✅ 修复：正确地从 pending 数组中移除已完成的 Promise
-    const failedIndex = pending.findIndex(p => 
-      raceEntries.some(entry => entry.promise === p)
-    );
-    if (failedIndex > -1) {
-      pending.splice(failedIndex, 1);
-    } else {
-      pending.shift();
+  } catch (err) {
+    // 超时或其他错误
+    console.error('❌ 竞速超时或失败:', err instanceof Error ? err.message : err);
+    
+    // 取消所有请求
+    for (const [name, controller] of abortControllers.entries()) {
+      try {
+        console.log(`🛑 超时取消 [${name}]`);
+        controller.abort();
+      } catch {}
     }
+    
+    throw err;
   }
 
-  // 所有服务商都失败了
-  throw new Error('所有配置的服务商均无法返回可用流，请检查网络、密钥或模型名称是否匹配。');
+  throw new Error('所有服务商均失败');
 }
 
 // ------------------------------------------------------------
-// 6️⃣ 主路由（POST /api/chat）
+// 8️⃣ 带重试的竞速（新增）
+// ------------------------------------------------------------
+async function raceWithRetry(
+  providers: Provider[],
+  messages: APIMessage[],
+  system: APIMessage,
+  signal?: AbortSignal
+): Promise<RaceResult> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= MAX_RETRY_COUNT; attempt++) {
+    try {
+      console.log(`🔄 尝试 ${attempt}/${MAX_RETRY_COUNT}...`);
+      
+      const result = await raceProviders(providers, messages, system, signal);
+      
+      // 成功，直接返回
+      console.log(`✅ 第 ${attempt} 次尝试成功！`);
+      return result;
+      
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      console.error(`❌ 第 ${attempt} 次尝试失败:`, lastError.message);
+
+      // 如果还有重试机会，等待后重试
+      if (attempt < MAX_RETRY_COUNT) {
+        console.log(`⏳ 等待 ${RETRY_DELAY_MS}ms 后重试...`);
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+      }
+    }
+  }
+
+  // 所有重试都失败
+  throw new Error(
+    `所有服务商在 ${MAX_RETRY_COUNT} 次尝试后均失败。最后错误: ${lastError?.message || '未知错误'}`
+  );
+}
+
+// ------------------------------------------------------------
+// 9️⃣ 主路由（POST /api/chat）
 // ------------------------------------------------------------
 export async function POST(req: NextRequest) {
   try {
@@ -250,9 +321,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // -------------------------------------------------
-    // ① 系统提示词（✅ 强化 JSON 格式要求）
-    // -------------------------------------------------
+    // 系统提示词（保持原样）
     let systemMessage: APIMessage;
 
     if (isFirstLoad || (messages.length === 1 && messages[0].role === 'user')) {
@@ -354,18 +423,14 @@ export async function POST(req: NextRequest) {
       };
     }
 
-    // -------------------------------------------------
-    // ② 🔥🔥🔥 关键修改：在最后一条用户消息后插入强力约束指令
-    // -------------------------------------------------
+    // 增强消息数组（保持原逻辑）
     const augmentedMessages: APIMessage[] = [...messages];
 
-    // 找到最后一条用户消息的索引
     const lastUserMessageIndex = augmentedMessages
       .map((msg, index) => (msg.role === 'user' ? index : -1))
       .filter(index => index !== -1)
       .pop();
 
-    // 在最后一条用户消息后插入绝对强力的格式约束
     if (lastUserMessageIndex !== undefined && lastUserMessageIndex >= 0) {
       const formatConstraint: APIMessage = {
         role: 'user',
@@ -385,10 +450,8 @@ export async function POST(req: NextRequest) {
 立即开始按格式回复，不要遗漏JSON任何参数（"reply"和"options"）！`,
       };
 
-      // 在最后一条用户消息后插入约束指令
       augmentedMessages.splice(lastUserMessageIndex + 1, 0, formatConstraint);
     } else {
-      // 如果没有找到用户消息（理论上不应该发生），就添加到末尾
       const formatConstraint: APIMessage = {
         role: 'user',
         content: `[🚨 格式约束 🚨] 必须严格按照JSON格式回复：{"reply":"...","options":["...","...","..."]}，options必须包含3个选项`,
@@ -396,9 +459,7 @@ export async function POST(req: NextRequest) {
       augmentedMessages.push(formatConstraint);
     }
 
-    // -------------------------------------------------
-    // ③ 读取服务商配置
-    // -------------------------------------------------
+    // 读取服务商配置
     const providers = getProviders();
     if (providers.length === 0) {
       return new Response(
@@ -413,19 +474,14 @@ export async function POST(req: NextRequest) {
       providers.map(p => `${p.name}(${p.model})`).join(', ')
     );
 
-    // -------------------------------------------------
-    // ④ 多服务商抢答（使用增强后的消息数组）
-    // -------------------------------------------------
-    const { readableStream, providerName } = await raceProviders(
+    // ✅ 使用带重试的竞速
+    const { readableStream, providerName } = await raceWithRetry(
       providers, 
-      augmentedMessages,      // ✅ 使用增强版消息数组
+      augmentedMessages,
       systemMessage, 
       req.signal
     );
 
-    // -------------------------------------------------
-    // ⑤ 前端透传
-    // -------------------------------------------------
     console.log(`🚀 开始流式传输 (${providerName})`);
 
     return new Response(readableStream, {
@@ -449,5 +505,3 @@ export async function POST(req: NextRequest) {
     );
   }
 }
-
-
