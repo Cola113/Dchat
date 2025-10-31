@@ -330,6 +330,7 @@ body {
 .input-area {
   flex-shrink: 0;
   padding: 6px 20px;
+  padding-bottom: calc(6px + env(safe-area-inset-bottom)); /* iOS 安全区 */
   background: rgba(255, 255, 255, 0.3);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
@@ -337,6 +338,7 @@ body {
   display: flex;
   gap: 6px;
   align-items: flex-end;
+  flex-wrap: nowrap; /* 不换行，优先收缩输入框 */
 }
 
 .input-box {
@@ -352,6 +354,15 @@ body {
   outline: none;
   transition: all 0.3s;
   resize: none;
+
+  /* 关键：允许在窄屏收缩，文本多行显示且断词 */
+  min-width: 0;
+  max-width: 100%;
+  max-height: 120px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .input-box:focus {
@@ -371,8 +382,10 @@ body {
   cursor: pointer;
   transition: all 0.3s;
   box-shadow: 0 4px 12px rgba(220, 38, 38, 0.3);
-  white-space: nowrap;
+  white-space: nowrap;      /* 单行显示 */
   flex-shrink: 0;
+  flex: 0 0 auto;           /* 不收缩不拉伸 */
+  min-width: max-content;   /* 避免被压到换行 */
 }
 
 .send-button:hover {
@@ -620,10 +633,11 @@ body {
 
 /* 输入包装器 */
 .input-wrapper {
-  flex: 1;
+  flex: 1 1 0%;
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-width: 0; /* 关键：允许收缩 */
 }
 
 /* 已上传文件预览 */
@@ -676,7 +690,7 @@ body {
 
 /* 上传按钮 */
 .upload-button {
-  flex-shrink: 0;
+  flex: 0 0 auto; /* 不收缩不拉伸 */
   padding: 8px 18px;  /* 👈 和发送按钮一致 */
   border-radius: 24px;
   border: none;
@@ -801,7 +815,7 @@ body {
 @keyframes slideIn {
   from {
     opacity: 0;
-    transform: translateX(100px);
+  transform: translateX(100px);
   }
   to {
     opacity: 1;
@@ -809,3 +823,9 @@ body {
   }
 }
 
+/* 超窄屏自适应：压缩按钮内边距，留更多空间给输入框 */
+@media (max-width: 380px) {
+  .input-area { gap: 4px; }
+  .send-button { padding: 8px 12px; font-size: 0.9rem; }
+  .upload-button { padding: 8px 10px; }
+}
