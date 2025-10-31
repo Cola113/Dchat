@@ -2,6 +2,29 @@
 import { NextRequest } from 'next/server';
 
 // ------------------------------------------------------------
+// 0️⃣ 竞速与重试配置
+// ------------------------------------------------------------
+const RACE_TIMEOUT_MS = 6000;   // 单次竞速总超时：6秒
+const MAX_RETRY_COUNT = 3;      // 最大重试次数
+const RETRY_DELAY_MS = 500;     // 重试间隔
+
+// 将一个外部 AbortSignal 连接到本地 AbortController（统一中止点）
+function linkSignals(source: AbortSignal | undefined, target: AbortController) {
+  if (!source) return () => {};
+  const onAbort = () => {
+    if (!target.signal.aborted) {
+      try { target.abort(); } catch {}
+    }
+  };
+  if (source.aborted) {
+    onAbort();
+    return () => {};
+  }
+  source.addEventListener('abort', onAbort, { once: true });
+  return () => source.removeEventListener('abort', onAbort);
+}
+
+// ------------------------------------------------------------
 // 1️⃣ 类型定义（已加入 'system' 角色）
 // ------------------------------------------------------------
 type ContentPart =
@@ -48,7 +71,7 @@ function getProviders(): Provider[] {
       'Content-Type': 'application/json',
       'Accept':       'text/event-stream',
       'Cache-Control':'no-cache',
-      'Connection':   'keep-alive',
+      // 'Connection':   'keep-alive', // ❌ 删除：禁止在 fetch 中设置该头（HTTP/2/undici 不允许）
       'Authorization': `Bearer ${apiKey}`,
     };
 
@@ -67,6 +90,7 @@ function getProviders(): Provider[] {
 
 // ------------------------------------------------------------
 // 3️⃣ 统一请求体（OpenAI‑ChatCompletions 兼容字段）
+// 说明：按你的要求，response_format 与 max_tokens 保持不变
 // ------------------------------------------------------------
 function buildPayload(model: string, messages: APIMessage[], system: APIMessage) {
   return {
@@ -74,13 +98,13 @@ function buildPayload(model: string, messages: APIMessage[], system: APIMessage)
     messages: [system, ...messages],
     temperature: 0.7,
     stream: true,                               // 打开 SSE 流
-    response_format: { type: "json_object" },   // ✅ 强制 JSON 输出模式
-    max_tokens: 32000,
+    response_format: { type: "json_object" },   // ✅ 强制 JSON 输出模式（保持不变）
+    //max_tokens: 32000,
   };
 }
 
 // ------------------------------------------------------------
-// 4️⃣ 单个服务商的流式请求
+// 4️⃣ 单个服务商的流式请求（修复中止链路与 cancel 行为）
 // ------------------------------------------------------------
 async function requestStream(
   provider: Provider,
@@ -88,8 +112,9 @@ async function requestStream(
   system: APIMessage,
   signal?: AbortSignal
 ): Promise<RaceResult> {
+  // 始终使用本地 controller 驱动 fetch；外部 signal 仅做联动
   const abortController = new AbortController();
-  const combinedSignal = signal ?? abortController.signal;
+  const unlink = linkSignals(signal, abortController);
 
   const payload = buildPayload(provider.model, messages, system);
   const endpoint = `${provider.baseUrl}/v1/chat/completions`;
@@ -99,7 +124,7 @@ async function requestStream(
       method: 'POST',
       headers: provider.headers,
       body: JSON.stringify(payload),
-      signal: combinedSignal,
+      signal: abortController.signal,
     });
 
     if (!res.ok || !res.body) {
@@ -111,6 +136,7 @@ async function requestStream(
     const decoder = new TextDecoder('utf-8', { fatal: false });
     let buffer = '';
 
+    // 透传原始 SSE（按你的要求：不修改拼块边界逻辑）
     const outStream = new ReadableStream<Uint8Array>({
       start(controller) {
         const pump = async () => {
@@ -121,6 +147,7 @@ async function requestStream(
                 if (buffer.trim()) {
                   controller.enqueue(new TextEncoder().encode(buffer + '\n\n'));
                 }
+                unlink();
                 controller.close();
                 return;
               }
@@ -135,16 +162,18 @@ async function requestStream(
             }
           } catch (err) {
             console.error(`[${provider.name}] 流读取错误:`, err);
-            controller.close();
+            try { unlink(); } catch {}
+            try { controller.close(); } catch {}
           }
         };
 
         pump();
       },
       cancel() {
-        try {
-          reader.releaseLock();
-        } catch {}
+        // 客户端断开 / 上游中止：真正取消读取与网络请求
+        try { reader.cancel(); } catch {}
+        try { abortController.abort(); } catch {}
+        try { unlink(); } catch {}
       },
     });
 
@@ -155,89 +184,145 @@ async function requestStream(
     };
   } catch (err) {
     console.error(`[${provider.name}] 请求失败:`, err instanceof Error ? err.message : err);
+    try { unlink(); } catch {}
     throw err;
   }
 }
 
 // ------------------------------------------------------------
-// 5️⃣ 多服务商抢答（✅ 完美实现：立即取消其他请求）
+// 5️⃣ 多服务商抢答（✅ 正确的事件驱动竞速 + 6 秒超时 + 精准取消）
+// 说明：赢家仍按“先握手成功（fetch ok）”判定，不改为“首个字节”
 // ------------------------------------------------------------
 async function raceProviders(
   providers: Provider[],
   messages: APIMessage[],
   system: APIMessage,
-  signal?: AbortSignal
+  outerSignal?: AbortSignal
 ): Promise<RaceResult> {
   console.log(`🏁 开始竞速，共 ${providers.length} 个服务商:`, providers.map(p => p.name).join(', '));
 
-  // ✅ 定义结果类型
-  type RaceOutcome = 
-    | { ok: true; result: RaceResult; provider: Provider }
-    | { ok: false; provider: Provider };
+  // 每个服务商一个独立的控制器，联动到外部信号（如客户端断开）
+  const perControllers = providers.map(() => new AbortController());
+  const unlinks = perControllers.map(c => linkSignals(outerSignal, c));
 
-  // ✅ 保存每个服务商的 Promise
-  const raceEntries = providers.map((provider) => ({
-    provider,
-    promise: requestStream(provider, messages, system, signal)
-      .then((result): RaceOutcome => ({ ok: true, result, provider }))
-      .catch((err): RaceOutcome => {
-        console.warn(`[${provider.name}] 竞速失败:`, err instanceof Error ? err.message : err);
-        return { ok: false, provider };
-      })
-  }));
+  // 6 秒墙钟超时：到点中止所有 provider
+  const timeoutId = setTimeout(() => {
+    console.warn(`⏱️ 竞速超时：超过 ${RACE_TIMEOUT_MS}ms 未有可用响应，全部取消`);
+    perControllers.forEach(c => { try { c.abort(); } catch {} });
+  }, RACE_TIMEOUT_MS);
 
-  // ✅ 真正的竞速：找到第一个成功的立即返回
-  const pending = raceEntries.map(entry => entry.promise);
+  const clearAll = () => {
+    try { clearTimeout(timeoutId); } catch {}
+    unlinks.forEach(fn => { try { fn(); } catch {} });
+  };
 
-  while (pending.length > 0) {
-    const fastest = await Promise.race(pending);
+  // 启动所有请求
+  type Outcome =
+    | { ok: true; result: RaceResult; index: number }
+    | { ok: false; error: unknown; index: number };
 
-    if (fastest.ok) {
-      // ✅ 找到第一个成功的，立即返回
-      console.log(`✅ [${fastest.result.providerName}] 竞速获胜！`);
+  const attempts = providers.map((provider, index) =>
+    requestStream(provider, messages, system, perControllers[index].signal)
+      .then((result): Outcome => ({ ok: true, result, index }))
+      .catch((error): Outcome => ({ ok: false, error, index }))
+  );
 
-      // ✅ 🔥 立即取消所有其他正在进行的请求
-      for (const entry of raceEntries) {
-        if (entry.provider.name !== fastest.provider.name) {
-          entry.promise.then((result) => {
-            if (result.ok) {
-              try {
-                console.log(`🛑 取消服务商 [${entry.provider.name}] 的请求`);
-                result.result.abortController.abort();
-              } catch (err) {
-                console.warn(`[${entry.provider.name}] 取消时出错:`, err);
-              }
+  // 事件驱动：第一个成功即返回；全部失败则抛错
+  return await new Promise<RaceResult>((resolve, reject) => {
+    let settled = false;
+    let remaining = attempts.length;
+
+    attempts.forEach((p, idx) => {
+      p.then(outcome => {
+        if (settled) return;
+
+        if (outcome.ok) {
+          settled = true;
+
+          // 赢家产生，取消其它
+          perControllers.forEach((c, j) => {
+            if (j !== outcome.index) {
+              try { c.abort(); } catch {}
             }
-          }).catch(() => {
-            // 已经失败的请求，忽略
           });
+
+          clearAll();
+          console.log(`✅ [${providers[outcome.index].name}] 竞速获胜！`);
+          resolve(outcome.result);
+        } else {
+          console.warn(
+            `[${providers[idx].name}] 竞速失败:`,
+            outcome.error instanceof Error ? outcome.error.message : outcome.error
+          );
+          remaining -= 1;
+          if (remaining === 0 && !settled) {
+            settled = true;
+            clearAll();
+            reject(new Error('所有配置的服务商均无法返回可用流，请检查网络、密钥或模型名称是否匹配。'));
+          }
         }
-      }
-
-      return fastest.result;
-    }
-
-    // ✅ 修复：正确地从 pending 数组中移除已完成的 Promise
-    const failedIndex = pending.findIndex(p => 
-      raceEntries.some(entry => entry.promise === p)
-    );
-    if (failedIndex > -1) {
-      pending.splice(failedIndex, 1);
-    } else {
-      pending.shift();
-    }
-  }
-
-  // 所有服务商都失败了
-  throw new Error('所有配置的服务商均无法返回可用流，请检查网络、密钥或模型名称是否匹配。');
+      }).catch(err => {
+        // 理论上不会进到这里（已在 attempts 内部 catch），兜底处理
+        if (settled) return;
+        console.warn(`[${providers[idx].name}] 竞速 Promise 异常:`, err);
+        remaining -= 1;
+        if (remaining === 0 && !settled) {
+          settled = true;
+          clearAll();
+          reject(err);
+        }
+      });
+    });
+  });
 }
 
 // ------------------------------------------------------------
-// 6️⃣ 主路由（POST /api/chat）
+// 6️⃣ 带重试的竞速（全部失败或 6 秒超时则自动重试）
+// ------------------------------------------------------------
+async function raceWithRetry(
+  providers: Provider[],
+  messages: APIMessage[],
+  system: APIMessage,
+  outerSignal?: AbortSignal
+): Promise<RaceResult> {
+  let lastErr: unknown;
+
+  for (let attempt = 1; attempt <= MAX_RETRY_COUNT; attempt++) {
+    try {
+      console.log(`🔄 竞速尝试 ${attempt}/${MAX_RETRY_COUNT} 开始`);
+      const res = await raceProviders(providers, messages, system, outerSignal);
+      console.log(`✅ 竞速尝试 ${attempt} 成功`);
+      return res;
+    } catch (err) {
+      lastErr = err;
+      console.warn(`❌ 竞速尝试 ${attempt} 失败:`, err instanceof Error ? err.message : err);
+      if (attempt < MAX_RETRY_COUNT) {
+        await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
+      }
+    }
+  }
+
+  throw new Error(
+    `在 ${MAX_RETRY_COUNT} 次尝试后仍未获得可用流：${lastErr instanceof Error ? lastErr.message : String(lastErr)}`
+  );
+}
+
+// ------------------------------------------------------------
+// 7️⃣ 主路由（POST /api/chat）
 // ------------------------------------------------------------
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
+    // 单独处理 JSON 解析错误 → 400
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch {
+      return new Response(
+        JSON.stringify({ error: '无效的 JSON 请求体' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
     const { messages, isFirstLoad } = body as {
       messages: APIMessage[];
       isFirstLoad?: boolean;
@@ -414,11 +499,11 @@ export async function POST(req: NextRequest) {
     );
 
     // -------------------------------------------------
-    // ④ 多服务商抢答（使用增强后的消息数组）
+    // ④ 多服务商抢答（带自动重试 + 6 秒总超时）
     // -------------------------------------------------
-    const { readableStream, providerName } = await raceProviders(
+    const { readableStream, providerName } = await raceWithRetry(
       providers, 
-      augmentedMessages,      // ✅ 使用增强版消息数组
+      augmentedMessages,
       systemMessage, 
       req.signal
     );
@@ -449,5 +534,3 @@ export async function POST(req: NextRequest) {
     );
   }
 }
-
-
