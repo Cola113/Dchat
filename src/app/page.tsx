@@ -45,7 +45,7 @@ function Snowflakes() {
 
   return (
     <div className="snowflakes">
-      {Array.from({ length: 300 }).map((_, i) => {
+      {Array.from({ length: 100 }).map((_, i) => {
         const symbol = snowflakeSymbols[i % snowflakeSymbols.length];
         const randomOpacity = (0.2 + Math.random() * 0.7).toFixed(2);
         return (
