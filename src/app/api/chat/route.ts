@@ -452,7 +452,7 @@ async function raceWithRetry(
   }
 
   throw new Error(
-    `在 ${MAX_RETRY_COUNT} 次尝试后仍未获得可用流：${lastErr instanceof Error ? lastErr.message : String(lastErr)}`
+    `在 ${MAX_RETRY_COUNT} 次尝试后仍未获得可用流：${lastErr instanceof Error ? err.message : String(lastErr)}`
   );
 }
 
@@ -472,9 +472,10 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { messages, isFirstLoad } = body as {
+    const { messages, isFirstLoad, isTarot } = body as {
       messages: APIMessage[];
       isFirstLoad?: boolean;
+      isTarot?: boolean;
     };
 
     if (!Array.isArray(messages) || messages.length === 0) {
@@ -493,7 +494,7 @@ export async function POST(req: NextRequest) {
     const tarotContext = messages.some(
       m => m.role === 'assistant' && typeof m.content === 'string' && m.content.includes('【塔罗占卜】')
     );
-    const reqIsTarot = (body as any)?.isTarot === true;
+    const reqIsTarot = isTarot === true;
     const inTarotMode = !tarotExit && (reqIsTarot || tarotTrigger || tarotContext);
 
     // -------------------------------------------------
