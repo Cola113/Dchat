@@ -452,8 +452,11 @@ async function raceWithRetry(
   }
 
   throw new Error(
-    `在 ${MAX_RETRY_COUNT} 次尝试后仍未获得可用流：${lastErr instanceof Error ? err.message : String(lastErr)}`
-  );
+  `在 ${MAX_RETRY_COUNT} 次尝试后仍未获得可用流：${
+    lastErr instanceof Error ? lastErr.message : String(lastErr)
+  }`
+);
+
 }
 
 // ------------------------------------------------------------
