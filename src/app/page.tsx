@@ -634,17 +634,6 @@ export default function Home() {
     handleSend(option);
   };
 
-  const renderTextWithBold = (text: string) => {
-    const parts = text.split(/(\*\*.*?\*\*)/g);
-    return parts.map((part, index) => {
-      if (part.startsWith('**') && part.endsWith('**')) {
-        const boldText = part.slice(2, -2);
-        return <strong key={index} style={{fontWeight: '700'}}>{boldText}</strong>;
-      }
-      return <span key={index}>{part}</span>;
-    });
-  };
-
   const renderMessageContent = (content: string | ContentItem[], messageId?: string) => {
     if (typeof content === 'string') {
       // 条件改为：只要有选项（>0）就显示容器，允许逐条出现
@@ -656,15 +645,19 @@ export default function Home() {
             remarkPlugins={[remarkGfm, remarkMath]}
             rehypePlugins={[rehypeKatex]}
             components={{
-              strong: ({node, ...props}) => (
+              strong: (props) => (
                 <strong style={{fontWeight: '700', color: 'inherit'}} {...props} />
               ),
-              em: ({node, ...props}) => (
+              em: (props) => (
                 <em style={{fontStyle: 'italic'}} {...props} />
               ),
-              // 让 Markdown 图片自适应
-              img: ({node, ...props}) => (
-                <img {...props} style={{maxWidth: '100%', height: 'auto', borderRadius: 8}} />
+              // eslint-disable-next-line @next/next/no-img-element
+              img: (props) => (
+                <img
+                  {...props}
+                  alt={props.alt ?? ''}
+                  style={{maxWidth: '100%', height: 'auto', borderRadius: 8}}
+                />
               ),
             }}
           >
@@ -869,7 +862,12 @@ export default function Home() {
               placeholder="输入你的消息...🎄"
               value={inputValue}
               onChange={(e) => { setInputValue(e.target.value); autoResize(); }}
-              onKeyDown={handleKeyDown}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSend();
+                }
+              }}
               rows={1}
             />
           </div>
