@@ -36,6 +36,9 @@ type APIMessage = {
 
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 
+// 🔮 简单触发词检测（仅当用户只输入“占卜/塔罗/塔羅”时触发）
+const isTarotTriggerText = (txt: string) => /^\s*(占卜|塔罗|塔羅)\s*$/i.test(txt);
+
 function Snowflakes() {
   const [mounted, setMounted] = useState(false);
   useEffect(() => { setMounted(true); }, []);
@@ -515,10 +518,14 @@ export default function Home() {
       const apiMessages = buildAPIMessages(messages, userContent);
       abortControllerRef.current = new AbortController();
 
+      // 🔮 首轮触发“占卜/塔罗”时，显式通知后端进入塔罗模式
+      const isTarotTrigger =
+        typeof userContent === 'string' && isTarotTriggerText(userContent);
+
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: apiMessages }),
+        body: JSON.stringify({ messages: apiMessages, isTarot: isTarotTrigger }),
         signal: abortControllerRef.current.signal
       });
 
