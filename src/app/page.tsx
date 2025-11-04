@@ -96,15 +96,109 @@ export default function Home() {
     el.style.height = Math.min(el.scrollHeight, max) + 'px';
   };
 
-  // 🔥 优化：流式处理 + 实时提取 reply 字段
+  // 流式处理：仅输出 reply 文本，options 逐条增量输出
   const processStreamResponse = async (
     reader: ReadableStreamDefaultReader<Uint8Array>,
-    onChunk: (displayContent: string) => void,
-    onComplete: (fullContent: string) => void
+    onReplyChunk: (displayContent: string) => void,
+    onComplete: (fullContent: string) => void,
+    onOptionItem?: (optionText: string) => void
   ) => {
     const decoder = new TextDecoder();
-    let fullContent = '';
+    let fullContent = ''; // 模型在 JSON 中写入的完整文本（含 reply 与 options）
+    let buf = '';         // 扫描缓冲区
 
+    // 找未转义的引号
+    const findUnescapedQuote = (s: string, from: number) => {
+      for (let i = from; i < s.length; i++) {
+        if (s[i] !== '"') continue;
+        let bs = 0, j = i - 1;
+        while (j >= 0 && s[j] === '\\') { bs++; j--; }
+        if (bs % 2 === 0) return i;
+      }
+      return -1;
+    };
+
+    // 尽力解码 JSON 字符串（对未完整的转义宽容）
+    const decodeJsonStringPartial = (raw: string) => {
+      let out = '';
+      for (let i = 0; i < raw.length; i++) {
+        const ch = raw[i];
+        if (ch !== '\\') { out += ch; continue; }
+        const n = raw[i + 1];
+        if (n === undefined) break;
+        if (n === '"' || n === '\\' || n === '/') { out += n; i++; continue; }
+        if (n === 'n') { out += '\n'; i++; continue; }
+        if (n === 'r') { out += '\r'; i++; continue; }
+        if (n === 't') { out += '\t'; i++; continue; }
+        if (n === 'b') { out += '\b'; i++; continue; }
+        if (n === 'f') { out += '\f'; i++; continue; }
+        if (n === 'u') {
+          const hex = raw.slice(i + 2, i + 6);
+          if (/^[0-9a-fA-F]{4}$/.test(hex)) {
+            out += String.fromCharCode(parseInt(hex, 16));
+            i += 5;
+            continue;
+          } else {
+            break; // 不完整的 \uXXXX，留待后续块
+          }
+        }
+        out += ch; // 未识别的转义，透传
+      }
+      return out;
+    };
+
+    // 扫描状态
+    let replyStart = -1;   // reply 字符串起始（引号内）
+    let replyEnd = -1;     // reply 字符串结束引号位置
+    let optionsStart = -1; // options 数组 '[' 后的位置
+    let optCursor = -1;    // 选项扫描游标（逐项推进）
+
+    const scan = () => {
+      // 1) 找 reply 起点
+      if (replyStart === -1) {
+        const m = /"reply"\s*:\s*"/.exec(buf);
+        if (m) replyStart = m.index + m[0].length;
+      }
+
+      // 2) 增量输出 reply
+      if (replyStart !== -1 && replyEnd === -1) {
+        const end = findUnescapedQuote(buf, replyStart);
+        replyEnd = end; // -1 表示尚未闭合
+        const upto = end === -1 ? buf.length : end;
+        const raw = buf.slice(replyStart, upto);
+        onReplyChunk(decodeJsonStringPartial(raw));
+      }
+
+      // 3) 找 options 开始（在 reply 完成之后）
+      if (replyEnd !== -1 && optionsStart === -1) {
+        const m = /"options"\s*:\s*\[/.exec(buf.slice(replyEnd + 1));
+        if (m) {
+          optionsStart = replyEnd + 1 + m.index + m[0].length;
+          optCursor = optionsStart;
+        }
+      }
+
+      // 4) 逐条输出 options
+      if (optCursor !== -1 && onOptionItem) {
+        while (true) {
+          while (optCursor < buf.length && /[\s,]/.test(buf[optCursor])) optCursor++;
+          if (optCursor >= buf.length) break;
+          if (buf[optCursor] === ']') { optCursor++; break; }
+          if (buf[optCursor] !== '"') break;
+
+          const q1 = optCursor;
+          const q2 = findUnescapedQuote(buf, q1 + 1);
+          if (q2 === -1) break;
+
+          const rawOpt = buf.slice(q1 + 1, q2);
+          const textOpt = decodeJsonStringPartial(rawOpt);
+          onOptionItem(textOpt);
+          optCursor = q2 + 1;
+        }
+      }
+    };
+
+    // 读取 SSE 流
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -113,35 +207,20 @@ export default function Home() {
       const lines = chunk.split('\n');
 
       for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const data = line.slice(6).trim();
-          if (data === '[DONE]') break;
+        if (!line.startsWith('data: ')) continue;
+        const data = line.slice(6).trim();
+        if (data === '[DONE]') continue;
 
-          try {
-            const parsed = JSON.parse(data);
-            const content = parsed.choices?.[0]?.delta?.content || '';
-            if (content) {
-              fullContent += content;
+        try {
+          const parsed = JSON.parse(data);
+          const content = parsed.choices?.[0]?.delta?.content || '';
+          if (!content) continue;
 
-              // 尝试实时提取 reply 字段
-              try {
-                const partialMatch = fullContent.match(/"reply"\s*:\s*"((?:[^"\\]|\\.)*)"/);
-                if (partialMatch) {
-                  const displayContent = partialMatch[1]
-                    .replace(/\\n/g, '\n')
-                    .replace(/\\"/g, '"')
-                    .replace(/\\\\/g, '\\');
-                  onChunk(displayContent);
-                } else {
-                  onChunk(fullContent);
-                }
-              } catch {
-                onChunk(fullContent);
-              }
-            }
-          } catch {
-            // 跳过无法解析的行
-          }
+          fullContent += content;
+          buf += content;
+          scan();
+        } catch {
+          // 非 JSON 帧忽略
         }
       }
     }
@@ -149,7 +228,7 @@ export default function Home() {
     onComplete(fullContent);
   };
 
-  // JSON 格式解析（保持原有逻辑）
+  // JSON 兜底解析（最终收尾用）
   const parseJSONResponse = (content: string): { reply: string; options: string[] } => {
     try {
       const parsed = JSON.parse(content);
@@ -240,13 +319,15 @@ export default function Home() {
 
       await processStreamResponse(
         reader,
-        (displayContent) => {
+        // 仅显示 reply 文本（不显示 JSON）
+        (displayReply) => {
           setMessages(prev => prev.map(msg =>
             msg.id === initialMessageId
-              ? { ...msg, content: displayContent }
+              ? { ...msg, content: displayReply }
               : msg
           ));
         },
+        // 收尾：修正最终 reply 和 options（如有缺漏）
         (finalContent) => {
           const { reply, options } = parseJSONResponse(finalContent);
           setMessages(prev => prev.map(msg =>
@@ -254,8 +335,14 @@ export default function Home() {
               ? { ...msg, content: reply }
               : msg
           ));
-          setSuggestedOptions(options);
+          // 若流式已逐条推入，这里只做兜底合并
+          setSuggestedOptions(prev => prev.length ? prev : options);
+          if (!optionMessageId) setOptionMessageId(initialMessageId);
+        },
+        // 新增：options 逐条出现
+        (opt) => {
           setOptionMessageId(initialMessageId);
+          setSuggestedOptions(prev => (prev.includes(opt) ? prev : [...prev, opt]));
         }
       );
     } catch (error) {
@@ -444,13 +531,14 @@ export default function Home() {
 
       await processStreamResponse(
         reader,
-        (displayContent) => {
+        // reply 渲染：仅文本
+        (displayReply) => {
           if (!hasStarted) {
             if (!hasFiles) {
               const aiMessage: Message = {
                 id: aiMessageId,
                 role: 'ai',
-                content: displayContent,
+                content: displayReply,
                 timestamp: Date.now()
               };
               setMessages(prev => [...prev, aiMessage]);
@@ -460,11 +548,12 @@ export default function Home() {
           setMessages(prev =>
             prev.map(msg =>
               msg.id === aiMessageId
-                ? { ...msg, content: displayContent }
+                ? { ...msg, content: displayReply }
                 : msg
             )
           );
         },
+        // 收尾：修正最终 reply 与 options
         (finalContent) => {
           if (!finalContent) {
             setMessages(prev =>
@@ -485,7 +574,7 @@ export default function Home() {
               )
             );
 
-            setSuggestedOptions(options);
+            setSuggestedOptions(prev => prev.length ? prev : options);
             setOptionMessageId(aiMessageId);
 
             if (hasFiles) {
@@ -500,6 +589,11 @@ export default function Home() {
               }));
             }
           }
+        },
+        // options 增量
+        (opt) => {
+          setOptionMessageId(aiMessageId);
+          setSuggestedOptions(prev => (prev.includes(opt) ? prev : [...prev, opt]));
         }
       );
 
@@ -546,31 +640,30 @@ export default function Home() {
 
   const renderMessageContent = (content: string | ContentItem[], messageId?: string) => {
     if (typeof content === 'string') {
-      const shouldShowOptions = messageId === optionMessageId && suggestedOptions.length === 3;
-      const hasComplexMarkdown = content.includes('```') || content.includes('#') || content.includes('- ') || content.includes('* ');
+      // 条件改为：只要有选项（>0）就显示容器，允许逐条出现
+      const shouldShowOptions = messageId === optionMessageId && suggestedOptions.length > 0;
 
       return (
         <div>
-          {hasComplexMarkdown ? (
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm, remarkMath]}
-              rehypePlugins={[rehypeKatex]}
-              components={{
-                strong: ({node, ...props}) => (
-                  <strong style={{fontWeight: '700', color: 'inherit'}} {...props} />
-                ),
-                em: ({node, ...props}) => (
-                  <em style={{fontStyle: 'italic'}} {...props} />
-                )
-              }}
-            >
-              {content}
-            </ReactMarkdown>
-          ) : (
-            <div style={{whiteSpace: 'pre-wrap'}}>
-              {renderTextWithBold(content)}
-            </div>
-          )}
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm, remarkMath]}
+            rehypePlugins={[rehypeKatex]}
+            components={{
+              strong: ({node, ...props}) => (
+                <strong style={{fontWeight: '700', color: 'inherit'}} {...props} />
+              ),
+              em: ({node, ...props}) => (
+                <em style={{fontStyle: 'italic'}} {...props} />
+              ),
+              // 让 Markdown 图片自适应
+              img: ({node, ...props}) => (
+                <img {...props} style={{maxWidth: '100%', height: 'auto', borderRadius: 8}} />
+              ),
+            }}
+          >
+            {content}
+          </ReactMarkdown>
+
           {shouldShowOptions && (
             <div className="message-options">
               <div className="options-label">💡点击选择✨</div>
