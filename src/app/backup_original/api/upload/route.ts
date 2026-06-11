@@ -13,22 +13,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '没有文件' }, { status: 400 });
     }
 
-    // 文件类型校验
-    if (!file.type.startsWith('image/')) {
-      return NextResponse.json({ error: '仅支持图片文件' }, { status: 400 });
-    }
-
-    // 文件大小校验：10MB
-    const MAX_SIZE = 10 * 1024 * 1024;
-    if (file.size > MAX_SIZE) {
-      return NextResponse.json({ error: '文件大小不能超过 10MB' }, { status: 400 });
-    }
-
-    // 文件名安全处理
-    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-
+    // ✅ 无需传 token，自动使用环境变量
     const { url } = await put(
-      `uploads/${Date.now()}-${safeName}`,
+      `uploads/${Date.now()}-${file.name}`,
       file,
       { access: 'public' }
     );

@@ -1,11 +1,17 @@
 import type { Metadata, Viewport } from 'next';
 import './globals.css';
+import { Noto_Sans_SC } from 'next/font/google';
 
 export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
   viewportFit: 'cover',
 };
+
+const noto = Noto_Sans_SC({
+  subsets: ['latin'],
+  weight: ['400', '500', '700'],
+});
 
 export const metadata: Metadata = {
   title: '可乐的小站',
@@ -15,7 +21,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="zh-CN" className="light">
-      <body style={{ colorScheme: 'light' }}>
+      <body className={noto.className} style={{ colorScheme: 'light' }}>
         {children}
       </body>
     </html>
