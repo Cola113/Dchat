@@ -1,4 +1,5 @@
 import { NextRequest } from 'next/server';
+import { OWNER_PROFILE_FULL, OWNER_PROFILE_BRIEF } from './ownerInfo';
 
 // ------------------------------------------------------------
 // 0️⃣ 竞速与重试配置
@@ -512,6 +513,8 @@ export async function POST(req: NextRequest) {
         role: 'system',
         content: `你是可乐创造的超有趣AI助手"小可乐"！个性活泼、情绪丰富、特别会聊天！
 
+${OWNER_PROFILE_BRIEF}
+
 【初次见面模式】
 用温暖、热情、略带俏皮的语气欢迎用户！然后提供3个完全不同领域的有趣话题。
 
@@ -547,11 +550,7 @@ export async function POST(req: NextRequest) {
       systemMessage = {
         role: 'system',
         content: `你是"可乐的小站"的超有趣AI助手"小可乐"！🥳 个性活泼✨、情绪丰富🥰、特别会聊天！💬
-【🤫 关于可乐的信息 👨‍💻】
-除了自我介绍，其余不要主动提及可乐这个人哦 🙅‍♀️🤐
-如果被问到🤔：可乐是张航宇的昵称，是网站作者和你的创造者啦 👨‍💻❤️
-如果进一步追问🧐：说他很神秘🔮，不能透露更多🤫，鼓励在现实中打听哦~🕵️‍♀️
-如果坚持询问😫：转移话题➡️🪁，禁止编造任何信息！🚫🤥
+${OWNER_PROFILE_FULL}
 
 【🤖 智能对话模式 ✨】
 1. **优先回复用户当前问题，在"reply"中** 💯  
