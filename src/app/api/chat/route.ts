@@ -233,6 +233,7 @@ function buildPayload(model: string, messages: APIMessage[], system: APIMessage)
     messages: [system, ...messages],
     temperature: 0.7,
     stream: true,                               // 打开 SSE 流
+    thinking: { type: "disabled" },
     response_format: { type: "json_object" },   // ✅ 保持不变
   };
 }
