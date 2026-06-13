@@ -78,6 +78,7 @@ const SNOWFLAKE_SYMBOLS = ['❄', '❅', '❆', '✻', '✼', '❉', '✺', '✹
 const CONVERSATION_ID_STORAGE_KEY = 'dchat.conversationId';
 const VISITOR_ID_STORAGE_KEY = 'dchat.visitorId';
 const DAILY_SIGN_SEEN_KEY = 'dchat.dailySignSeenDate';
+const DAILY_SIGN_REROLLED_KEY = 'dchat.dailySignRerolledDate';
 const ACHIEVEMENT_STORAGE_KEY = 'dchat.achievements';
 const ACHIEVEMENTS: Record<AchievementId, Omit<AchievementToastItem, 'id'>> = {
   first_message: {
@@ -298,6 +299,7 @@ export default function Home() {
   const [isLoadingOptions, setIsLoadingOptions] = useState(false);
   const [dailySign, setDailySign] = useState<DailySign | null>(null);
   const [showDailySign, setShowDailySign] = useState(false);
+  const [dailySignRerolled, setDailySignRerolled] = useState(false);
   const [achievementToasts, setAchievementToasts] = useState<AchievementToastItem[]>([]);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -341,8 +343,10 @@ export default function Home() {
     visitorIdRef.current = getOrCreateVisitorId();
 
     const today = getLocalDateKey();
-    const sign = pickDailySign(visitorIdRef.current, today);
+    const rerolledToday = localStorage.getItem(DAILY_SIGN_REROLLED_KEY) === today;
+    const sign = pickDailySign(visitorIdRef.current, today, rerolledToday ? 1 : 0);
     setDailySign(sign);
+    setDailySignRerolled(rerolledToday);
 
     if (localStorage.getItem(DAILY_SIGN_SEEN_KEY) !== today) {
       setShowDailySign(true);
@@ -371,6 +375,15 @@ export default function Home() {
     }
     setShowDailySign(false);
     unlockAchievement('daily_sign');
+  };
+
+  const rerollDailySign = () => {
+    if (typeof window === 'undefined' || !visitorIdRef.current || dailySignRerolled) return;
+
+    const today = getLocalDateKey();
+    localStorage.setItem(DAILY_SIGN_REROLLED_KEY, today);
+    setDailySign(pickDailySign(visitorIdRef.current, today, 1));
+    setDailySignRerolled(true);
   };
 
   // 文本域自适应高度（到上限）
@@ -1075,7 +1088,13 @@ export default function Home() {
         </div>
       ))}
 
-      <DailySignModal sign={dailySign} open={showDailySign} onAccept={acceptDailySign} />
+      <DailySignModal
+        sign={dailySign}
+        open={showDailySign}
+        onAccept={acceptDailySign}
+        onReroll={rerollDailySign}
+        rerollDisabled={dailySignRerolled}
+      />
       <AchievementToast items={achievementToasts} />
 
       <div className="chat-container">

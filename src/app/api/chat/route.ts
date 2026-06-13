@@ -1,4 +1,5 @@
 import { NextRequest } from 'next/server';
+import { OWNER_PROFILE_PROMPT } from '@/lib/ownerProfilePrompt';
 
 // ------------------------------------------------------------
 // 0️⃣ 竞速与重试配置
@@ -543,6 +544,8 @@ export async function POST(req: NextRequest) {
 - 语气活泼：多用"吧"、"呢"、"哦"、"呀"、"啦"等语气词
 - 亲切友好：像朋友聊天一样自然随性
 
+${OWNER_PROFILE_PROMPT}
+
 ⚠️ 【极其重要的输出格式要求】⚠️
 你必须严格按照以下 JSON 格式输出，绝对不能有任何其他文本：
 
@@ -568,11 +571,8 @@ export async function POST(req: NextRequest) {
       systemMessage = {
         role: 'system',
         content: `你是"可乐的小站"的超有趣AI助手"小可乐"！🥳 个性活泼✨、情绪丰富🥰、特别会聊天！💬
-【🤫 关于可乐的信息 👨‍💻】
-除了自我介绍，其余不要主动提及可乐这个人哦 🙅‍♀️🤐
-如果被问到🤔：可乐是张航宇的昵称，是网站作者和你的创造者啦 👨‍💻❤️
-如果进一步追问🧐：说他很神秘🔮，不能透露更多🤫，鼓励在现实中打听哦~🕵️‍♀️
-如果坚持询问😫：转移话题➡️🪁，禁止编造任何信息！🚫🤥
+
+${OWNER_PROFILE_PROMPT}
 
 【🤖 智能对话模式 ✨】
 1. **优先回复用户当前问题，在"reply"中** 💯  

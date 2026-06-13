@@ -905,7 +905,7 @@ body {
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
-  padding: 28px;
+  padding: 30px;
   box-shadow: 0 24px 80px rgba(15, 23, 42, 0.32);
   border: 1px solid rgba(255, 255, 255, 0.55);
   animation: signRise 0.38s ease-out;
@@ -922,50 +922,96 @@ body {
 .daily-sign-copy {
   position: relative;
   color: white;
-  text-shadow: 0 2px 16px rgba(0, 0, 0, 0.5);
+  text-shadow: 0 2px 18px rgba(0, 0, 0, 0.58);
 }
 
 .daily-sign-kicker {
-  font-size: 0.78rem;
-  letter-spacing: 0.28em;
+  width: max-content;
+  padding: 4px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  background: rgba(15, 23, 42, 0.18);
+  font-size: 0.72rem;
+  letter-spacing: 0.32em;
   font-weight: 700;
   opacity: 0.9;
-  margin-bottom: 10px;
+  margin-bottom: 14px;
 }
 
 .daily-sign-copy h2 {
   margin: 0;
-  font-family: "STKaiti", "KaiTi", "Songti SC", serif;
-  font-size: 2.8rem;
-  line-height: 1.05;
+  font-family: "LXGW WenKai", "STKaiti", "KaiTi", "Songti SC", "Noto Serif SC", serif;
+  font-size: clamp(2.45rem, 8vw, 3.45rem);
+  line-height: 0.98;
   letter-spacing: 0;
+  font-weight: 600;
+  text-wrap: balance;
 }
 
-.daily-sign-copy p {
-  margin: 16px 0 22px;
+.daily-sign-text {
+  margin: 18px 0 0;
   font-size: 1rem;
   line-height: 1.75;
   color: rgba(255, 255, 255, 0.94);
 }
 
+.daily-sign-english {
+  margin: 9px 0 24px;
+  max-width: 28ch;
+  font-family: "Cormorant Garamond", "Playfair Display", "Iowan Old Style", Georgia, serif;
+  font-size: 0.92rem;
+  font-style: italic;
+  line-height: 1.42;
+  color: rgba(255, 255, 255, 0.76);
+  text-shadow: 0 2px 14px rgba(0, 0, 0, 0.46);
+}
+
+.daily-sign-actions {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .daily-sign-button {
   position: relative;
-  align-self: flex-start;
   border: 1px solid rgba(255, 255, 255, 0.7);
-  background: rgba(255, 255, 255, 0.86);
-  color: #14532d;
   border-radius: 999px;
-  padding: 10px 22px;
+  padding: 10px 20px;
   font-size: 0.95rem;
   font-weight: 700;
   cursor: pointer;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
-  transition: transform 0.2s ease, background 0.2s ease;
+  transition: transform 0.2s ease, background 0.2s ease, opacity 0.2s ease;
 }
 
-.daily-sign-button:hover {
+.daily-sign-button-primary {
+  background: rgba(255, 255, 255, 0.9);
+  color: #14532d;
+}
+
+.daily-sign-button-secondary {
+  background: rgba(15, 23, 42, 0.22);
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.daily-sign-button:hover:not(:disabled) {
   transform: translateY(-2px);
+}
+
+.daily-sign-button-primary:hover:not(:disabled) {
   background: white;
+}
+
+.daily-sign-button-secondary:hover:not(:disabled) {
+  background: rgba(15, 23, 42, 0.34);
+}
+
+.daily-sign-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
+  box-shadow: none;
+  filter: grayscale(0.4);
 }
 
 .achievement-stack {
