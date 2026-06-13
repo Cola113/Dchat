@@ -18,8 +18,17 @@ const nextConfig: NextConfig = {
             protocol: "https",
             hostname: ossImageHost,
           },
+          {
+            protocol: "https",
+            hostname: "upload.wikimedia.org",
+          },
         ]
-      : [],
+      : [
+          {
+            protocol: "https",
+            hostname: "upload.wikimedia.org",
+          },
+        ],
   },
   async headers() {
     return [

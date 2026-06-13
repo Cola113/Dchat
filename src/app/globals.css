@@ -888,16 +888,16 @@ body {
   display: grid;
   place-items: center;
   padding: 24px;
-  background: rgba(15, 23, 42, 0.28);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  background: rgba(15, 23, 42, 0.34);
+  backdrop-filter: blur(10px) saturate(1.08);
+  -webkit-backdrop-filter: blur(10px) saturate(1.08);
   animation: modalFadeIn 0.25s ease-out;
 }
 
 .daily-sign-card {
-  width: min(92vw, 430px);
-  min-height: 540px;
-  border-radius: 8px;
+  width: min(92vw, 450px);
+  min-height: 560px;
+  border-radius: 30px;
   overflow: hidden;
   background-size: cover;
   background-position: center;
@@ -905,9 +905,9 @@ body {
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
-  padding: 30px;
-  box-shadow: 0 24px 80px rgba(15, 23, 42, 0.32);
-  border: 1px solid rgba(255, 255, 255, 0.55);
+  padding: 32px;
+  box-shadow: 0 28px 90px rgba(15, 23, 42, 0.38), inset 0 0 0 1px rgba(255, 255, 255, 0.24);
+  border: 1px solid rgba(255, 255, 255, 0.5);
   animation: signRise 0.38s ease-out;
 }
 
@@ -915,12 +915,25 @@ body {
   content: '';
   position: absolute;
   inset: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.46);
   pointer-events: none;
+}
+
+.daily-sign-card::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 22% 12%, rgba(255, 255, 255, 0.18), transparent 28%),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.06), transparent 20%, transparent 80%, rgba(0, 0, 0, 0.1));
+  mix-blend-mode: soft-light;
 }
 
 .daily-sign-copy {
   position: relative;
+  z-index: 1;
   color: white;
   text-shadow: 0 2px 18px rgba(0, 0, 0, 0.58);
 }
@@ -967,6 +980,7 @@ body {
 
 .daily-sign-actions {
   position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -986,8 +1000,8 @@ body {
 }
 
 .daily-sign-button-primary {
-  background: rgba(255, 255, 255, 0.9);
-  color: #14532d;
+  background: rgba(255, 252, 242, 0.92);
+  color: #21402f;
 }
 
 .daily-sign-button-secondary {

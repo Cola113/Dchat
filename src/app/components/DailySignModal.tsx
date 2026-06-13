@@ -23,7 +23,7 @@ export default function DailySignModal({
     <div className="daily-sign-backdrop" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
       <div
         className="daily-sign-card"
-        style={{ backgroundImage: `linear-gradient(180deg, rgba(17,24,39,0.08), rgba(17,24,39,0.62)), url("${sign.image}")` }}
+        style={{ backgroundImage: `linear-gradient(180deg, rgba(12,18,28,0.12), rgba(12,18,28,0.42) 42%, rgba(12,18,28,0.76)), url("${sign.image}")` }}
       >
         <div className="daily-sign-copy">
           <div className="daily-sign-kicker">今日小签</div>

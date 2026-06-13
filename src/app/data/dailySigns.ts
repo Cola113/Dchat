@@ -5,8 +5,21 @@ export type DailySign = {
   image: string;
 };
 
-const image = (id: string) =>
-  `https://images.unsplash.com/${id}?auto=format&fit=crop&w=1200&q=80`;
+const artworkImages = [
+  'https://upload.wikimedia.org/wikipedia/commons/thumb/e/ea/Van_Gogh_-_Starry_Night_-_Google_Art_Project.jpg/1280px-Van_Gogh_-_Starry_Night_-_Google_Art_Project.jpg',
+  'https://upload.wikimedia.org/wikipedia/commons/thumb/6/68/Vincent_van_Gogh_-_Almond_blossom_-_Google_Art_Project.jpg/1280px-Vincent_van_Gogh_-_Almond_blossom_-_Google_Art_Project.jpg',
+  'https://upload.wikimedia.org/wikipedia/commons/thumb/3/3e/Irises-Vincent_van_Gogh.jpg/1280px-Irises-Vincent_van_Gogh.jpg',
+  'https://upload.wikimedia.org/wikipedia/commons/thumb/1/15/Vincent_van_Gogh_-_Wheat_Field_with_Cypresses_%28National_Gallery_version%29.jpg/1280px-Vincent_van_Gogh_-_Wheat_Field_with_Cypresses_%28National_Gallery_version%29.jpg',
+  'https://upload.wikimedia.org/wikipedia/commons/thumb/e/e1/Claude_Monet_-_Seerosen.jpg/1280px-Claude_Monet_-_Seerosen.jpg',
+  'https://upload.wikimedia.org/wikipedia/commons/thumb/0/0d/Great_Wave_off_Kanagawa2.jpg/1280px-Great_Wave_off_Kanagawa2.jpg',
+  'https://upload.wikimedia.org/wikipedia/commons/thumb/b/b9/Caspar_David_Friedrich_-_Wanderer_above_the_sea_of_fog.jpg/1280px-Caspar_David_Friedrich_-_Wanderer_above_the_sea_of_fog.jpg',
+  'https://upload.wikimedia.org/wikipedia/commons/thumb/8/86/Edvard_Munch_-_The_Scream_-_Google_Art_Project.jpg/1280px-Edvard_Munch_-_The_Scream_-_Google_Art_Project.jpg',
+  'https://upload.wikimedia.org/wikipedia/commons/thumb/c/c8/Klimt_-_The_Kiss.jpg/1280px-Klimt_-_The_Kiss.jpg',
+  'https://upload.wikimedia.org/wikipedia/commons/thumb/5/5a/Monet_-_Nymph%C3%A9as%2C_Japanese_Bridge%2C_1918-1926%2C_1974-178-38.jpg/1280px-Monet_-_Nymph%C3%A9as%2C_Japanese_Bridge%2C_1918-1926%2C_1974-178-38.jpg',
+];
+
+const image = (seed: string) =>
+  artworkImages[hashString(seed) % artworkImages.length];
 
 export const dailySigns: DailySign[] = [
   {
