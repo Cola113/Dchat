@@ -18,6 +18,7 @@ type UploadedFile = {
   name: string;
   type: string;
   data: string;
+  key?: string;
 };
 
 type ContentItem = {
@@ -507,22 +508,32 @@ export default function Home() {
       }
 
       const filePromises = imageFiles.map(async (file) => {
-        return new Promise<UploadedFile>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => {
-            const result = reader.result as string;
-            resolve({ name: file.name, type: file.type, data: result });
-          };
-          reader.onerror = () => reject(new Error('文件读取失败'));
-          reader.readAsDataURL(file);
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const response = await fetch('/api/upload', {
+          method: 'POST',
+          body: formData,
         });
+        const result = await response.json().catch(() => ({}));
+
+        if (!response.ok || typeof result.url !== 'string') {
+          throw new Error(typeof result.error === 'string' ? result.error : '图片上传失败');
+        }
+
+        return {
+          name: file.name,
+          type: file.type,
+          data: result.url,
+          key: typeof result.key === 'string' ? result.key : undefined,
+        } satisfies UploadedFile;
       });
 
       const uploaded = await Promise.all(filePromises);
       setUploadedFiles(prev => [...prev, ...uploaded]);
     } catch (error) {
-      console.error('文件读取错误:', error);
-      alert('文件读取失败，请重试');
+      console.error('图片上传错误:', error);
+      alert(error instanceof Error ? error.message : '图片上传失败，请重试');
     } finally {
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
@@ -582,6 +593,11 @@ export default function Home() {
       createdAt: new Date(userMessage.timestamp).toISOString(),
       metadata: {
         uploadedImageCount: currentFiles.length,
+        uploadedImages: currentFiles.map(file => ({
+          name: file.name,
+          type: file.type,
+          key: file.key,
+        })),
       },
     });
 
