@@ -31,6 +31,17 @@ type APIMessage = {
   content: string | ContentItem[];
 };
 
+type ConversationLogRole = 'user' | 'assistant';
+
+type ConversationLogPayload = {
+  conversationId: string;
+  messageId: string;
+  role: ConversationLogRole;
+  content: string | ContentItem[];
+  createdAt: string;
+  metadata?: Record<string, unknown>;
+};
+
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 const AiMarkdown = dynamic(() => import('./components/AiMarkdown'), {
   ssr: false,
@@ -40,9 +51,57 @@ const AiMarkdown = dynamic(() => import('./components/AiMarkdown'), {
 type SnowflakeItem = { symbol: string; opacity: string };
 const SNOWFLAKE_COUNT = 100;
 const SNOWFLAKE_SYMBOLS = ['❄', '❅', '❆', '✻', '✼', '❉', '✺', '✹', '✸', '✷', '✶', '✵', '✴', '✳', '✲', '✱', '*', '·', '•'];
+const CONVERSATION_ID_STORAGE_KEY = 'dchat.conversationId';
 
 // 🔮 简单触发词检测（仅当用户只输入“占卜/塔罗/塔羅”时触发）
 const isTarotTriggerText = (txt: string) => /^\s*(占卜|塔罗|塔羅)\s*$/i.test(txt);
+
+const createConversationId = () => `conv_${uid()}`;
+
+const getOrCreateConversationId = () => {
+  if (typeof window === 'undefined') return createConversationId();
+
+  const existing = sessionStorage.getItem(CONVERSATION_ID_STORAGE_KEY);
+  if (existing) return existing;
+
+  const next = createConversationId();
+  sessionStorage.setItem(CONVERSATION_ID_STORAGE_KEY, next);
+  return next;
+};
+
+const prepareContentForLog = (content: string | ContentItem[]) => {
+  if (typeof content === 'string') return content;
+
+  return content.map((item) => {
+    if (item.type === 'image_url' && item.image_url?.url.startsWith('data:')) {
+      return {
+        ...item,
+        image_url: { url: '[data-url omitted]' },
+      };
+    }
+
+    return item;
+  });
+};
+
+const saveConversationLog = async (payload: ConversationLogPayload) => {
+  try {
+    const response = await fetch('/api/conversations/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...payload,
+        content: prepareContentForLog(payload.content),
+      }),
+    });
+
+    if (!response.ok) {
+      console.warn('保存对话日志失败:', response.status);
+    }
+  } catch (error) {
+    console.warn('保存对话日志失败:', error);
+  }
+};
 
 function Snowflakes() {
   const [snowflakes, setSnowflakes] = useState<SnowflakeItem[]>([]);
@@ -77,6 +136,7 @@ function Snowflakes() {
 
 export default function Home() {
   const initialMessageId = useRef(uid()).current;
+  const conversationIdRef = useRef('');
   const [optionMessageId, setOptionMessageId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([
     {
@@ -96,6 +156,18 @@ export default function Home() {
   const abortControllerRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  const getConversationId = () => {
+    if (!conversationIdRef.current) {
+      conversationIdRef.current = getOrCreateConversationId();
+    }
+
+    return conversationIdRef.current;
+  };
+
+  useEffect(() => {
+    conversationIdRef.current = getOrCreateConversationId();
+  }, []);
 
   // 文本域自适应高度（到上限）
   const autoResize = () => {
@@ -481,11 +553,12 @@ export default function Home() {
     setOptionMessageId(null);
 
     let userContent: string | ContentItem[];
+    const currentFiles = [...uploadedFiles];
 
-    if (uploadedFiles.length > 0) {
+    if (currentFiles.length > 0) {
       userContent = [
         { type: 'text', text: textToSend || '请分析这些图片' },
-        ...uploadedFiles.map(file => ({
+        ...currentFiles.map(file => ({
           type: 'image_url',
           image_url: { url: file.data }
         }))
@@ -501,10 +574,20 @@ export default function Home() {
       timestamp: Date.now()
     };
 
+    void saveConversationLog({
+      conversationId: getConversationId(),
+      messageId: userMessage.id,
+      role: 'user',
+      content: userContent,
+      createdAt: new Date(userMessage.timestamp).toISOString(),
+      metadata: {
+        uploadedImageCount: currentFiles.length,
+      },
+    });
+
     setMessages(prev => [...prev, userMessage]);
     setInputValue('');
     autoResize();
-    const currentFiles = [...uploadedFiles];
     setUploadedFiles([]);
     setIsGenerating(true);
 
@@ -570,13 +653,24 @@ export default function Home() {
         // 收尾：修正最终 reply 与 options
         (finalContent) => {
           if (!finalContent) {
+            const fallbackReply = '抱歉，我无法生成回复。';
             setMessages(prev =>
               prev.map(msg =>
                 msg.id === aiMessageId
-                  ? { ...msg, content: '抱歉，我无法生成回复。' }
+                  ? { ...msg, content: fallbackReply }
                   : msg
               )
             );
+            void saveConversationLog({
+              conversationId: getConversationId(),
+              messageId: aiMessageId,
+              role: 'assistant',
+              content: fallbackReply,
+              createdAt: new Date().toISOString(),
+              metadata: {
+                status: 'empty_response',
+              },
+            });
           } else {
             const { reply, options } = parseJSONResponse(finalContent);
 
@@ -590,6 +684,16 @@ export default function Home() {
 
             setSuggestedOptions(prev => prev.length ? prev : options);
             setOptionMessageId(aiMessageId);
+            void saveConversationLog({
+              conversationId: getConversationId(),
+              messageId: aiMessageId,
+              role: 'assistant',
+              content: reply,
+              createdAt: new Date().toISOString(),
+              metadata: {
+                options,
+              },
+            });
 
             if (hasFiles) {
               setMessages(prev => prev.map(msg => {
@@ -616,13 +720,25 @@ export default function Home() {
         console.log('生成已停止');
       } else {
         console.error('请求错误:', error);
+        const errorReply = '抱歉，连接服务器失败，请稍后再试。';
         setMessages(prev =>
           prev.map(msg =>
             msg.id === aiMessageId
-              ? { ...msg, content: '抱歉，连接服务器失败，请稍后再试。' }
+              ? { ...msg, content: errorReply }
               : msg
           )
         );
+        void saveConversationLog({
+          conversationId: getConversationId(),
+          messageId: aiMessageId,
+          role: 'assistant',
+          content: errorReply,
+          createdAt: new Date().toISOString(),
+          metadata: {
+            status: 'request_error',
+            message: error instanceof Error ? error.message : String(error),
+          },
+        });
       }
     } finally {
       setIsGenerating(false);
