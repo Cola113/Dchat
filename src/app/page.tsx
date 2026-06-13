@@ -2,10 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import Image from 'next/image';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import remarkMath from 'remark-math';
-import rehypeKatex from 'rehype-katex';
+import dynamic from 'next/dynamic';
 import 'katex/dist/katex.min.css';
 
 type Message = {
@@ -35,32 +32,42 @@ type APIMessage = {
 };
 
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+const AiMarkdown = dynamic(() => import('./components/AiMarkdown'), {
+  ssr: false,
+  loading: () => null,
+});
+
+type SnowflakeItem = { symbol: string; opacity: string };
+const SNOWFLAKE_COUNT = 100;
+const SNOWFLAKE_SYMBOLS = ['❄', '❅', '❆', '✻', '✼', '❉', '✺', '✹', '✸', '✷', '✶', '✵', '✴', '✳', '✲', '✱', '*', '·', '•'];
 
 // 🔮 简单触发词检测（仅当用户只输入“占卜/塔罗/塔羅”时触发）
 const isTarotTriggerText = (txt: string) => /^\s*(占卜|塔罗|塔羅)\s*$/i.test(txt);
 
 function Snowflakes() {
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => { setMounted(true); }, []);
-  if (!mounted) return null;
+  const [snowflakes, setSnowflakes] = useState<SnowflakeItem[]>([]);
+  useEffect(() => {
+    setSnowflakes(Array.from({ length: SNOWFLAKE_COUNT }).map((_, i) => ({
+      symbol: SNOWFLAKE_SYMBOLS[i % SNOWFLAKE_SYMBOLS.length],
+      opacity: (0.2 + Math.random() * 0.7).toFixed(2),
+    })));
+  }, []);
 
-  const snowflakeSymbols = ['❄', '❅', '❆', '✻', '✼', '❉', '✺', '✹', '✸', '✷', '✶', '✵', '✴', '✳', '✲', '✱', '*', '·', '•'];
+  if (snowflakes.length === 0) return null;
 
   return (
     <div className="snowflakes">
-      {Array.from({ length: 100 }).map((_, i) => {
-        const symbol = snowflakeSymbols[i % snowflakeSymbols.length];
-        const randomOpacity = (0.2 + Math.random() * 0.7).toFixed(2);
+      {snowflakes.map((snowflake, i) => {
         return (
           <div
             key={i}
             className="snowflake"
             style={{
-              '--snowflake-opacity': randomOpacity,
-              opacity: randomOpacity
+              '--snowflake-opacity': snowflake.opacity,
+              opacity: snowflake.opacity
             } as React.CSSProperties}
           >
-            {symbol}
+            {snowflake.symbol}
           </div>
         );
       })}
@@ -641,28 +648,7 @@ export default function Home() {
 
       return (
         <div>
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm, remarkMath]}
-            rehypePlugins={[rehypeKatex]}
-            components={{
-              strong: (props) => (
-                <strong style={{fontWeight: '700', color: 'inherit'}} {...props} />
-              ),
-              em: (props) => (
-                <em style={{fontStyle: 'italic'}} {...props} />
-              ),
-              // eslint-disable-next-line @next/next/no-img-element
-              img: (props) => (
-                <img
-                  {...props}
-                  alt={props.alt ?? ''}
-                  style={{maxWidth: '100%', height: 'auto', borderRadius: 8}}
-                />
-              ),
-            }}
-          >
-            {content}
-          </ReactMarkdown>
+          <AiMarkdown content={content} />
 
           {shouldShowOptions && (
             <div className="message-options">
@@ -862,12 +848,7 @@ export default function Home() {
               placeholder="输入你的消息...🎄"
               value={inputValue}
               onChange={(e) => { setInputValue(e.target.value); autoResize(); }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault();
-                  handleSend();
-                }
-              }}
+              onKeyDown={handleKeyDown}
               rows={1}
             />
           </div>
