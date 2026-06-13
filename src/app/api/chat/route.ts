@@ -1,4 +1,5 @@
 import { NextRequest } from 'next/server';
+import { OWNER_PROFILE_PROMPT } from '@/lib/ownerProfilePrompt';
 
 // ------------------------------------------------------------
 // 0️⃣ 竞速与重试配置
@@ -6,6 +7,8 @@ import { NextRequest } from 'next/server';
 const RACE_TIMEOUT_MS = 6000;   // 单次竞速总超时：6秒
 const MAX_RETRY_COUNT = 3;      // 最大重试次数
 const RETRY_DELAY_MS = 500;     // 重试间隔
+const MIN_CONTEXT_TOKENS = 256 * 1024;
+const CONTEXT_RESPONSE_RESERVE_TOKENS = 4096;
 
 // 将一个外部 AbortSignal 连接到本地 AbortController（统一中止点）
 function linkSignals(source: AbortSignal | undefined, target: AbortController) {
@@ -51,6 +54,57 @@ type RaceResult = {
   abortController: AbortController;
   providerName: string;      // 记录成功的服务商名称
 };
+
+function readContextTokenBudget() {
+  const configured = Number.parseInt(
+    process.env.CHAT_CONTEXT_TOKENS ||
+    process.env.CONTEXT_WINDOW_TOKENS ||
+    '',
+    10
+  );
+
+  if (!Number.isFinite(configured) || configured <= 0) return MIN_CONTEXT_TOKENS;
+  return Math.max(configured, MIN_CONTEXT_TOKENS);
+}
+
+function estimateContentTokens(content: APIMessage['content']) {
+  if (typeof content === 'string') {
+    return Math.ceil(content.length / 2);
+  }
+
+  return content.reduce((sum, item) => {
+    if (item.type === 'image_url') return sum + 1024;
+    return sum + Math.ceil((item.text || '').length / 2);
+  }, 0);
+}
+
+function estimateMessageTokens(message: APIMessage) {
+  return 8 + estimateContentTokens(message.content);
+}
+
+function fitMessagesToContext(messages: APIMessage[], system: APIMessage) {
+  const budget = readContextTokenBudget();
+  const reserved = estimateMessageTokens(system) + CONTEXT_RESPONSE_RESERVE_TOKENS;
+  let remaining = Math.max(0, budget - reserved);
+  const kept: APIMessage[] = [];
+
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    const messageTokens = estimateMessageTokens(message);
+
+    if (messageTokens > remaining && kept.length > 0) break;
+
+    kept.push(message);
+    remaining -= messageTokens;
+  }
+
+  const fitted = kept.reverse();
+  if (fitted.length !== messages.length) {
+    console.warn(`上下文已按 ${budget} tokens 预算裁剪: ${messages.length} -> ${fitted.length}`);
+  }
+
+  return fitted;
+}
 
 // ------------------------------------------------------------
 // 🔮 塔罗模式标记与系统提示词
@@ -171,7 +225,7 @@ function getProviders(): Provider[] {
 
 // ------------------------------------------------------------
 // 3️⃣ 统一请求体（OpenAI‑ChatCompletions 兼容字段）
-// 说明：按你的要求，response_format 与 max_tokens 保持不变
+// 说明：上下文窗口由模型决定；应用侧用 CHAT_CONTEXT_TOKENS 控制保留预算。
 // ------------------------------------------------------------
 function buildPayload(model: string, messages: APIMessage[], system: APIMessage) {
   return {
@@ -179,8 +233,8 @@ function buildPayload(model: string, messages: APIMessage[], system: APIMessage)
     messages: [system, ...messages],
     temperature: 0.7,
     stream: true,                               // 打开 SSE 流
+    thinking: { type: "disabled" },
     response_format: { type: "json_object" },   // ✅ 保持不变
-    //max_tokens: 32000,
   };
 }
 
@@ -543,6 +597,8 @@ export async function POST(req: NextRequest) {
 - 语气活泼：多用"吧"、"呢"、"哦"、"呀"、"啦"等语气词
 - 亲切友好：像朋友聊天一样自然随性
 
+${OWNER_PROFILE_PROMPT}
+
 ⚠️ 【极其重要的输出格式要求】⚠️
 你必须严格按照以下 JSON 格式输出，绝对不能有任何其他文本：
 
@@ -568,11 +624,8 @@ export async function POST(req: NextRequest) {
       systemMessage = {
         role: 'system',
         content: `你是"可乐的小站"的超有趣AI助手"小可乐"！🥳 个性活泼✨、情绪丰富🥰、特别会聊天！💬
-【🤫 关于可乐的信息 👨‍💻】
-除了自我介绍，其余不要主动提及可乐这个人哦 🙅‍♀️🤐
-如果被问到🤔：可乐是张航宇的昵称，是网站作者和你的创造者啦 👨‍💻❤️
-如果进一步追问🧐：说他很神秘🔮，不能透露更多🤫，鼓励在现实中打听哦~🕵️‍♀️
-如果坚持询问😫：转移话题➡️🪁，禁止编造任何信息！🚫🤥
+
+${OWNER_PROFILE_PROMPT}
 
 【🤖 智能对话模式 ✨】
 1. **优先回复用户当前问题，在"reply"中** 💯  
@@ -668,6 +721,7 @@ export async function POST(req: NextRequest) {
     // -------------------------------------------------
     // ③ 读取服务商配置
     // -------------------------------------------------
+    const contextMessages = fitMessagesToContext(augmentedMessages, systemMessage);
     const providers = getProviders();
     if (providers.length === 0) {
       return new Response(
@@ -687,7 +741,7 @@ export async function POST(req: NextRequest) {
     // -------------------------------------------------
     const { readableStream, providerName } = await raceWithRetry(
       providers, 
-      augmentedMessages,
+      contextMessages,
       systemMessage, 
       req.signal
     );
