@@ -116,16 +116,37 @@ function getTarotSystemMessage(): APIMessage {
 // ------------------------------------------------------------
 // 2️⃣ 环境变量读取（1~4 组，缺省则自动跳过）
 // ------------------------------------------------------------
+function normalizeBaseUrl(value: string, providerName: string) {
+  const withoutTrailingSlash = value.replace(/\/+$/, '');
+
+  try {
+    const url = new URL(withoutTrailingSlash);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      console.warn(`[${providerName}] baseUrl protocol must be http or https, skipped`);
+      return null;
+    }
+
+    return url.toString().replace(/\/+$/, '');
+  } catch {
+    console.warn(`[${providerName}] invalid baseUrl, skipped`);
+    return null;
+  }
+}
+
 function getProviders(): Provider[] {
   const providers: Provider[] = [];
   const MAX = 4;
 
   for (let i = 1; i <= MAX; i++) {
+    const providerName = `Provider-${i}`;
     const baseUrl = (process.env[`BASE_URL_${i}`] || '').trim();
     const apiKey  = (process.env[`KEY_${i}`]    || '').trim();
     const model   = (process.env[`MODEL_${i}`]   || '').trim();
 
     if (!baseUrl || !apiKey || !model) continue;   // 缺省即跳过
+
+    const normalizedBaseUrl = normalizeBaseUrl(baseUrl, providerName);
+    if (!normalizedBaseUrl) continue;
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -137,8 +158,8 @@ function getProviders(): Provider[] {
 
     providers.push({
       id: String(i),
-      name: `Provider-${i}`,
-      baseUrl: baseUrl.replace(/\/+$/, ''), // 去掉尾斜杠
+      name: providerName,
+      baseUrl: normalizedBaseUrl,
       apiKey,
       model,
       headers,
