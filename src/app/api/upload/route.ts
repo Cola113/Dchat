@@ -2,9 +2,16 @@ export const runtime = 'nodejs';
 export const maxDuration = 60;
 
 import { NextRequest, NextResponse } from 'next/server';
-import { put } from '@vercel/blob';  // ✅ 会自动使用 Vercel 注入的环境变量
+import {
+  createAliyunOssReadUrl,
+  getAliyunOssConfig,
+  getAliyunOssPrefix,
+  putObjectToAliyunOss,
+  sanitizeOssSegment,
+} from '@/lib/aliyunOss';
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
+const DEFAULT_READ_URL_TTL_SECONDS = 24 * 60 * 60;
 const ALLOWED_IMAGE_TYPES = new Set([
   'image/jpeg',
   'image/png',
@@ -12,19 +19,21 @@ const ALLOWED_IMAGE_TYPES = new Set([
   'image/gif',
 ]);
 
-function sanitizeFileName(name: string) {
-  const safeName = name
-    .normalize('NFKD')
-    .replace(/[\\/:*?"<>|\u0000-\u001F]/g, '-')
-    .replace(/\s+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '')
-    .slice(0, 100);
-
-  return safeName || 'image';
+function getReadUrlTtlSeconds() {
+  const raw = Number(process.env.ALI_OSS_UPLOAD_URL_TTL_SECONDS);
+  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_READ_URL_TTL_SECONDS;
+  return Math.min(Math.floor(raw), 7 * 24 * 60 * 60);
 }
 
 export async function POST(request: NextRequest) {
+  const config = getAliyunOssConfig();
+  if (!config) {
+    return NextResponse.json(
+      { error: '未配置阿里云 OSS 上传环境变量' },
+      { status: 503 }
+    );
+  }
+
   try {
     const formData = await request.formData();
     const file = formData.get('file') as File | null;
@@ -47,20 +56,29 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const safeFileName = sanitizeFileName(file.name);
+    const prefix = getAliyunOssPrefix('ALI_OSS_UPLOAD_PREFIX', 'uploads');
+    const date = new Date().toISOString().slice(0, 10);
+    const safeFileName = sanitizeOssSegment(file.name, 'image', 100);
+    const key = `${prefix}/${date}/${Date.now()}-${crypto.randomUUID()}-${safeFileName}`;
 
-    // ✅ 无需传 token，自动使用环境变量
-    const { url } = await put(
-      `uploads/${Date.now()}-${crypto.randomUUID()}-${safeFileName}`,
-      file,
-      { access: 'public' }
-    );
+    await putObjectToAliyunOss({
+      config,
+      key,
+      body: file,
+      contentType: file.type,
+    });
 
-    return NextResponse.json({ url });
+    const url = createAliyunOssReadUrl({
+      config,
+      key,
+      expiresInSeconds: getReadUrlTtlSeconds(),
+    });
+
+    return NextResponse.json({ url, key });
   } catch (error) {
-    console.error('上传错误:', error);
+    console.error('上传到阿里云 OSS 失败:', error);
     return NextResponse.json(
-      { error: '文件上传失败，请确保已启用 Vercel Blob' },
+      { error: '文件上传失败，请检查阿里云 OSS 配置' },
       { status: 500 }
     );
   }

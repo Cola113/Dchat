@@ -1,7 +1,26 @@
 import type { NextConfig } from "next";
 
+const ossImageHost = (
+  process.env.ALI_OSS_ENDPOINT ||
+  (
+    process.env.ALI_OSS_BUCKET && process.env.ALI_OSS_REGION
+      ? `${process.env.ALI_OSS_BUCKET}.${process.env.ALI_OSS_REGION}.aliyuncs.com`
+      : ""
+  )
+).replace(/^https?:\/\//, "").replace(/\/+$/, "");
+
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  images: {
+    remotePatterns: ossImageHost
+      ? [
+          {
+            protocol: "https",
+            hostname: ossImageHost,
+          },
+        ]
+      : [],
+  },
   async headers() {
     return [
       {
