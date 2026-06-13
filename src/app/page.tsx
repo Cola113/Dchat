@@ -3,6 +3,10 @@
 import { useState, useRef, useEffect } from 'react';
 import Image from 'next/image';
 import dynamic from 'next/dynamic';
+import AchievementToast, { type AchievementToastItem } from './components/AchievementToast';
+import DailySignModal from './components/DailySignModal';
+import EmojiAvatar, { type AvatarMood } from './components/EmojiAvatar';
+import { pickDailySign, type DailySign } from './data/dailySigns';
 import 'katex/dist/katex.min.css';
 
 type Message = {
@@ -43,6 +47,25 @@ type ConversationLogPayload = {
   metadata?: Record<string, unknown>;
 };
 
+type AchievementId =
+  | 'first_message'
+  | 'first_image'
+  | 'deep_chat'
+  | 'tarot_reader'
+  | 'late_night'
+  | 'seven_days'
+  | 'daily_sign';
+
+type LocalAchievementState = {
+  unlocked: Partial<Record<AchievementId, string>>;
+  stats: {
+    messagesSent: number;
+    imagesUploaded: number;
+    chatTurns: number;
+    visitDays: string[];
+  };
+};
+
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 const AiMarkdown = dynamic(() => import('./components/AiMarkdown'), {
   ssr: false,
@@ -53,11 +76,60 @@ type SnowflakeItem = { symbol: string; opacity: string };
 const SNOWFLAKE_COUNT = 100;
 const SNOWFLAKE_SYMBOLS = ['❄', '❅', '❆', '✻', '✼', '❉', '✺', '✹', '✸', '✷', '✶', '✵', '✴', '✳', '✲', '✱', '*', '·', '•'];
 const CONVERSATION_ID_STORAGE_KEY = 'dchat.conversationId';
+const VISITOR_ID_STORAGE_KEY = 'dchat.visitorId';
+const DAILY_SIGN_SEEN_KEY = 'dchat.dailySignSeenDate';
+const ACHIEVEMENT_STORAGE_KEY = 'dchat.achievements';
+const ACHIEVEMENTS: Record<AchievementId, Omit<AchievementToastItem, 'id'>> = {
+  first_message: {
+    icon: '💬',
+    title: '点亮：第一句话',
+    description: '你和小可乐正式开聊啦',
+  },
+  first_image: {
+    icon: '🖼️',
+    title: '点亮：图像观察员',
+    description: '上传了一张图片给小可乐看',
+  },
+  deep_chat: {
+    icon: '🫧',
+    title: '点亮：深聊五回合',
+    description: '这一轮聊得开始冒泡了',
+  },
+  tarot_reader: {
+    icon: '🔮',
+    title: '点亮：神秘小桌',
+    description: '开启了一次塔罗式聊天',
+  },
+  late_night: {
+    icon: '🌙',
+    title: '点亮：夜间来信',
+    description: '在很晚的时候也有人陪你说话',
+  },
+  seven_days: {
+    icon: '📆',
+    title: '点亮：第七次路过',
+    description: '这个浏览器已经来过七天了',
+  },
+  daily_sign: {
+    icon: '🎐',
+    title: '点亮：收下小签',
+    description: '今天的小风铃已经挂好',
+  },
+};
 
 // 🔮 简单触发词检测（仅当用户只输入“占卜/塔罗/塔羅”时触发）
 const isTarotTriggerText = (txt: string) => /^\s*(占卜|塔罗|塔羅)\s*$/i.test(txt);
 
+const getLocalDateKey = () => {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
 const createConversationId = () => `conv_${uid()}`;
+const createVisitorId = () => `visitor_${uid()}`;
 
 const getOrCreateConversationId = () => {
   if (typeof window === 'undefined') return createConversationId();
@@ -68,6 +140,52 @@ const getOrCreateConversationId = () => {
   const next = createConversationId();
   sessionStorage.setItem(CONVERSATION_ID_STORAGE_KEY, next);
   return next;
+};
+
+const getOrCreateVisitorId = () => {
+  if (typeof window === 'undefined') return createVisitorId();
+
+  const existing = localStorage.getItem(VISITOR_ID_STORAGE_KEY);
+  if (existing) return existing;
+
+  const next = createVisitorId();
+  localStorage.setItem(VISITOR_ID_STORAGE_KEY, next);
+  return next;
+};
+
+const createDefaultAchievementState = (): LocalAchievementState => ({
+  unlocked: {},
+  stats: {
+    messagesSent: 0,
+    imagesUploaded: 0,
+    chatTurns: 0,
+    visitDays: [],
+  },
+});
+
+const readAchievementState = () => {
+  if (typeof window === 'undefined') return createDefaultAchievementState();
+
+  try {
+    const parsed = JSON.parse(localStorage.getItem(ACHIEVEMENT_STORAGE_KEY) || '');
+    return {
+      ...createDefaultAchievementState(),
+      ...parsed,
+      stats: {
+        ...createDefaultAchievementState().stats,
+        ...(parsed?.stats || {}),
+        visitDays: Array.isArray(parsed?.stats?.visitDays) ? parsed.stats.visitDays : [],
+      },
+      unlocked: parsed?.unlocked || {},
+    } as LocalAchievementState;
+  } catch {
+    return createDefaultAchievementState();
+  }
+};
+
+const writeAchievementState = (state: LocalAchievementState) => {
+  if (typeof window === 'undefined') return;
+  localStorage.setItem(ACHIEVEMENT_STORAGE_KEY, JSON.stringify(state));
 };
 
 const prepareContentForLog = (content: string | ContentItem[]) => {
@@ -104,6 +222,30 @@ const saveConversationLog = async (payload: ConversationLogPayload) => {
   }
 };
 
+const textFromContent = (content: string | ContentItem[]) => {
+  if (typeof content === 'string') return content;
+  return content.map(item => item.text || item.image_url?.url || '').join('\n');
+};
+
+const hasImageContent = (content: string | ContentItem[]) =>
+  Array.isArray(content) && content.some(item => item.type === 'image_url');
+
+const inferAiMood = (content: string | ContentItem[], seed: string): AvatarMood => {
+  if (hasImageContent(content)) return 'image';
+
+  const text = textFromContent(content).toLowerCase();
+  if (/塔罗|占卜|抽牌|牌阵|🔮/.test(text)) return 'tarot';
+  if (/抱歉|失败|错误|无法|error|fail/.test(text)) return 'error';
+  if (/代码|公式|步骤|分析|总结|建议|计划|实现|api|json|bug/.test(text)) return 'focused';
+  if (/为什么|怎么|如何|什么|吗|？|\?/.test(text)) return 'curious';
+  if (/难过|焦虑|累|烦|哭|委屈|害怕|失眠|压力/.test(text)) return 'caring';
+  if (/哈哈|开心|太棒|好耶|快乐|喜欢|可爱|惊喜|✨|🎉/.test(text)) return 'happy';
+  if (/晚安|睡|夜|困|凌晨|深夜/.test(text)) return 'sleepy';
+
+  const moods: AvatarMood[] = ['idle', 'spark', 'happy', 'curious', 'caring'];
+  return moods[seed.length % moods.length];
+};
+
 function Snowflakes() {
   const [snowflakes, setSnowflakes] = useState<SnowflakeItem[]>([]);
   useEffect(() => {
@@ -138,6 +280,7 @@ function Snowflakes() {
 export default function Home() {
   const initialMessageId = useRef(uid()).current;
   const conversationIdRef = useRef('');
+  const visitorIdRef = useRef('');
   const [optionMessageId, setOptionMessageId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([
     {
@@ -153,6 +296,9 @@ export default function Home() {
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [suggestedOptions, setSuggestedOptions] = useState<string[]>([]);
   const [isLoadingOptions, setIsLoadingOptions] = useState(false);
+  const [dailySign, setDailySign] = useState<DailySign | null>(null);
+  const [showDailySign, setShowDailySign] = useState(false);
+  const [achievementToasts, setAchievementToasts] = useState<AchievementToastItem[]>([]);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -166,9 +312,66 @@ export default function Home() {
     return conversationIdRef.current;
   };
 
+  const unlockAchievement = (achievementId: AchievementId) => {
+    if (typeof window === 'undefined') return;
+
+    const state = readAchievementState();
+    if (state.unlocked[achievementId]) return;
+
+    state.unlocked[achievementId] = new Date().toISOString();
+    writeAchievementState(state);
+
+    const achievement = ACHIEVEMENTS[achievementId];
+    const toastId = `${achievementId}-${uid()}`;
+    setAchievementToasts(prev => [...prev, { id: toastId, ...achievement }]);
+    window.setTimeout(() => {
+      setAchievementToasts(prev => prev.filter(item => item.id !== toastId));
+    }, 4200);
+  };
+
+  const updateAchievementState = (updater: (state: LocalAchievementState) => void) => {
+    if (typeof window === 'undefined') return;
+    const state = readAchievementState();
+    updater(state);
+    writeAchievementState(state);
+  };
+
   useEffect(() => {
     conversationIdRef.current = getOrCreateConversationId();
+    visitorIdRef.current = getOrCreateVisitorId();
+
+    const today = getLocalDateKey();
+    const sign = pickDailySign(visitorIdRef.current, today);
+    setDailySign(sign);
+
+    if (localStorage.getItem(DAILY_SIGN_SEEN_KEY) !== today) {
+      setShowDailySign(true);
+    }
+
+    updateAchievementState((state) => {
+      if (!state.stats.visitDays.includes(today)) {
+        state.stats.visitDays = [...state.stats.visitDays, today].slice(-30);
+      }
+
+      if (state.stats.visitDays.length >= 7 && !state.unlocked.seven_days) {
+        state.unlocked.seven_days = new Date().toISOString();
+        const achievement = ACHIEVEMENTS.seven_days;
+        const toastId = `seven-days-${uid()}`;
+        setAchievementToasts(prev => [...prev, { id: toastId, ...achievement }]);
+        window.setTimeout(() => {
+          setAchievementToasts(prev => prev.filter(item => item.id !== toastId));
+        }, 4200);
+      }
+    });
   }, []);
+
+  const acceptDailySign = () => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(DAILY_SIGN_SEEN_KEY, getLocalDateKey());
+    }
+    setShowDailySign(false);
+    unlockAchievement('daily_sign');
+  };
 
   // 文本域自适应高度（到上限）
   const autoResize = () => {
@@ -578,6 +781,22 @@ export default function Home() {
       userContent = textToSend;
     }
 
+    const isTarotTrigger =
+      typeof userContent === 'string' && isTarotTriggerText(userContent);
+    let nextChatTurns = 0;
+    updateAchievementState((state) => {
+      state.stats.messagesSent += 1;
+      state.stats.imagesUploaded += currentFiles.length;
+      state.stats.chatTurns += 1;
+      nextChatTurns = state.stats.chatTurns;
+    });
+    unlockAchievement('first_message');
+    if (currentFiles.length > 0) unlockAchievement('first_image');
+    if (nextChatTurns >= 5) unlockAchievement('deep_chat');
+    if (isTarotTrigger) unlockAchievement('tarot_reader');
+    const hour = new Date().getHours();
+    if (hour >= 23 || hour < 5) unlockAchievement('late_night');
+
     const userMessage: Message = {
       id: uid(),
       role: 'user',
@@ -623,10 +842,6 @@ export default function Home() {
     try {
       const apiMessages = buildAPIMessages(messages, userContent);
       abortControllerRef.current = new AbortController();
-
-      // 🔮 首轮触发“占卜/塔罗”时，显式通知后端进入塔罗模式
-      const isTarotTrigger =
-        typeof userContent === 'string' && isTarotTriggerText(userContent);
 
       const response = await fetch('/api/chat', {
         method: 'POST',
@@ -773,6 +988,17 @@ export default function Home() {
     handleSend(option);
   };
 
+  const getTypingAvatarMood = (): AvatarMood => {
+    const lastUserMessage = [...messages].reverse().find(message => message.role === 'user');
+    if (!lastUserMessage) return isLoadingOptions ? 'spark' : 'thinking';
+    if (hasImageContent(lastUserMessage.content)) return 'image';
+    const text = textFromContent(lastUserMessage.content);
+    if (isTarotTriggerText(text)) return 'tarot';
+    if (/难过|焦虑|累|烦|哭|委屈|害怕|失眠|压力/.test(text)) return 'caring';
+    if (/为什么|怎么|如何|什么|吗|？|\?/.test(text)) return 'curious';
+    return 'thinking';
+  };
+
   const renderMessageContent = (content: string | ContentItem[], messageId?: string) => {
     if (typeof content === 'string') {
       // 条件改为：只要有选项（>0）就显示容器，允许逐条出现
@@ -849,6 +1075,9 @@ export default function Home() {
         </div>
       ))}
 
+      <DailySignModal sign={dailySign} open={showDailySign} onAccept={acceptDailySign} />
+      <AchievementToast items={achievementToasts} />
+
       <div className="chat-container">
         <div className="header">
           <div style={{ display: 'inline-block' }}>
@@ -869,15 +1098,9 @@ export default function Home() {
             <div key={message.id} className={`message ${message.role}`}>
               <div className="avatar">
                 {message.role === 'ai' ? (
-                  <Image
-                    src="/robot-santa.png"
-                    alt="AI助手"
-                    width={40}
-                    height={40}
-                    className="avatar-img"
-                  />
+                  <EmojiAvatar mood={inferAiMood(message.content, message.id)} seed={message.id} />
                 ) : (
-                  '🐮'
+                  <EmojiAvatar mood="user" seed={message.id} />
                 )}
               </div>
               <div className="bubble">
@@ -892,13 +1115,7 @@ export default function Home() {
           {isGenerating && (
             <div className="message ai">
               <div className="avatar">
-                <Image
-                  src="/robot-santa.png"
-                  alt="AI助手"
-                  width={40}
-                  height={40}
-                  className="avatar-img"
-                />
+                <EmojiAvatar mood={getTypingAvatarMood()} seed="generating" active />
               </div>
               <div className="bubble">
                 <div className="typing">
@@ -913,13 +1130,7 @@ export default function Home() {
           {isLoadingOptions && messages.length === 1 && (
             <div className="message ai">
               <div className="avatar">
-                <Image
-                  src="/robot-santa.png"
-                  alt="AI助手"
-                  width={40}
-                  height={40}
-                  className="avatar-img"
-                />
+                <EmojiAvatar mood="spark" seed="initial-options" active />
               </div>
               <div className="bubble">
                 <div className="typing">
