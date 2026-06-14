@@ -4,7 +4,10 @@ import { OWNER_PROFILE_PROMPT } from '@/lib/ownerProfilePrompt';
 // ------------------------------------------------------------
 // 0️⃣ 竞速与重试配置
 // ------------------------------------------------------------
-const RACE_TIMEOUT_MS = 6000;   // 单次竞速总超时：6秒
+const RACE_TIMEOUT_MS = Math.max(
+  6000,
+  Number.parseInt(process.env.CHAT_RACE_TIMEOUT_MS || '12000', 10) || 12000
+);   // 单次竞速总超时：默认 12 秒，可用 CHAT_RACE_TIMEOUT_MS 调整
 const MAX_RETRY_COUNT = 3;      // 最大重试次数
 const RETRY_DELAY_MS = 500;     // 重试间隔
 const MIN_CONTEXT_TOKENS = 256 * 1024;

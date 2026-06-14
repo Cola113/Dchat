@@ -801,6 +801,27 @@ body {
   transform: translateX(-2px) scale(0.98);
 }
 
+.option-button-in-message:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.retry-action {
+  border-top-color: rgba(220, 38, 38, 0.18);
+}
+
+.retry-button-in-message {
+  border-color: rgba(220, 38, 38, 0.32);
+  color: #991b1b;
+  font-weight: 700;
+}
+
+.retry-button-in-message:hover:not(:disabled) {
+  background: rgba(220, 38, 38, 0.14);
+  border-color: rgba(220, 38, 38, 0.48);
+}
+
 /* 用户消息中的选项按钮 */
 .message.user .option-button-in-message {
   background: rgba(220, 38, 38, 0.15);
