@@ -554,7 +554,7 @@ export default function Home() {
   };
 
   // JSON 兜底解析（最终收尾用）
-  const parseJSONResponse = (content: string): { reply: string; options: string[] } => {
+  const parseJSONResponse = (content: string): { reply: string; options: string[]; ok: boolean } => {
     const decodeJsonString = (raw: string) => {
       try {
         return JSON.parse(`"${raw}"`);
@@ -580,6 +580,7 @@ export default function Home() {
       return {
         reply,
         options: options.length === 3 ? options : [],
+        ok: true,
       };
     };
 
@@ -627,6 +628,7 @@ export default function Home() {
         return {
           reply,
           options: options.length === 3 ? options : [],
+          ok: true,
         };
       }
     }
@@ -634,7 +636,8 @@ export default function Home() {
     console.warn('JSON 解析失败，隐藏兜底选项');
     return {
       reply: trimmed || '哎呀，这条回复有点轻飘飘的，我再认真接一次～✨',
-      options: []
+      options: [],
+      ok: false
     };
   };
 
@@ -1010,18 +1013,28 @@ export default function Home() {
               },
             });
           } else {
-            const { reply, options } = parseJSONResponse(finalContent);
+            const parsedResponse = parseJSONResponse(finalContent);
+            const { reply, options } = parsedResponse;
 
             upsertAiMessage(reply);
-            setRetryActions(prev => {
-              if (!prev[aiMessageId]) return prev;
-              const next = { ...prev };
-              delete next[aiMessageId];
-              return next;
-            });
+            if (parsedResponse.ok) {
+              setRetryActions(prev => {
+                if (!prev[aiMessageId]) return prev;
+                const next = { ...prev };
+                delete next[aiMessageId];
+                return next;
+              });
+            } else {
+              setRetryActions(prev => ({ ...prev, [aiMessageId]: userContent }));
+            }
 
-            setSuggestedOptions(prev => prev.length ? prev : options);
-            if (options.length > 0) setOptionMessageId(aiMessageId);
+            if (parsedResponse.ok) {
+              setSuggestedOptions(prev => prev.length ? prev : options);
+              if (options.length > 0) setOptionMessageId(aiMessageId);
+            } else {
+              setSuggestedOptions([]);
+              setOptionMessageId(null);
+            }
             void saveConversationLog({
               conversationId: getConversationId(),
               messageId: aiMessageId,
@@ -1029,6 +1042,7 @@ export default function Home() {
               content: reply,
               createdAt: new Date().toISOString(),
               metadata: {
+                status: parsedResponse.ok ? 'ok' : 'parse_error',
                 options,
               },
             });
