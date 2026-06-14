@@ -17,7 +17,7 @@ export type AvatarMood =
   | 'spark';
 
 const moodFrames: Record<AvatarMood, string[]> = {
-  user: ['🐮', '🙂', '😎', '🌟'],
+  user: ['💿', '🎮', '🎾', '🐱', '✨'],
   idle: ['😊', '🤖', '🙂', '😌', '✨'],
   thinking: ['🤔', '🫧', '💭', '👀', '✨'],
   happy: ['😄', '🤭', '🥳', '😊', '😆'],

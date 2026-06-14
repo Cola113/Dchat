@@ -9,7 +9,7 @@ export const viewport: Viewport = {
 
 export const metadata: Metadata = {
   title: '可乐的小站',
-  description: 'AI 智能助手聊天',
+  description: '一格存档',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
