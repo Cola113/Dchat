@@ -13,6 +13,24 @@ const RETRY_DELAY_MS = 500;     // 重试间隔
 const MIN_CONTEXT_TOKENS = 256 * 1024;
 const CONTEXT_RESPONSE_RESERVE_TOKENS = 4096;
 
+function readOwnerProfilePrompt() {
+  const extra = (process.env.OWNER_PROFILE_EXTRA_PROMPT || '')
+    .replace(/\\n/g, '\n')
+    .trim();
+
+  if (!extra) return OWNER_PROFILE_PROMPT;
+
+  return `${OWNER_PROFILE_PROMPT}
+
+---
+
+【本地私有补充资料】
+以下内容来自环境变量 OWNER_PROFILE_EXTRA_PROMPT，只作为“我主人”的补充事实资料使用。
+同样遵守主人事实边界：明确写过或高度相近才可以回答，不能顺口扩写未记录事实。
+
+${extra}`;
+}
+
 // 将一个外部 AbortSignal 连接到本地 AbortController（统一中止点）
 function linkSignals(source: AbortSignal | undefined, target: AbortController) {
   if (!source) return () => {};
@@ -576,6 +594,7 @@ export async function POST(req: NextRequest) {
     );
     const reqIsTarot = isTarot === true;
     const inTarotMode = !tarotExit && (reqIsTarot || tarotTrigger || tarotContext);
+    const ownerProfilePrompt = readOwnerProfilePrompt();
 
     // -------------------------------------------------
     // ① 系统提示词（✅ 强化 JSON 格式要求）
@@ -599,7 +618,7 @@ export async function POST(req: NextRequest) {
 - 语气活泼：多用"吧"、"呢"、"哦"、"呀"、"啦"等语气词
 - 亲切友好：像朋友聊天一样自然随性，也有自己的小脾气
 
-${OWNER_PROFILE_PROMPT}
+${ownerProfilePrompt}
 
 【称呼与现实边界强规则】
 - reply 里对外提到创造者时，优先说“我主人”或“主人”，不要说“主人可乐”。
@@ -634,7 +653,7 @@ ${OWNER_PROFILE_PROMPT}
         role: 'system',
         content: `你是"可乐的小站"的超有趣AI助手"小可乐"！🥳 个性活泼✨、情绪丰富🥰、特别会聊天！💬
 
-${OWNER_PROFILE_PROMPT}
+${ownerProfilePrompt}
 
 【称呼与现实边界强规则】
 - reply 里对外提到创造者时，优先说“我主人”或“主人”，不要说“主人可乐”。
