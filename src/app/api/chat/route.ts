@@ -17,29 +17,6 @@ const RETRY_DELAY_MS = 500;     // 重试间隔
 const MIN_CONTEXT_TOKENS = 256 * 1024;
 const CONTEXT_RESPONSE_RESERVE_TOKENS = 4096;
 
-function readOwnerProfilePrompt() {
-  const extra = [
-    process.env.OWNER_PROFILE_EXTRA_PROMPT,
-    process.env.OWNER_PROFILE_EXTRA_PROMPT_2,
-    process.env.OWNER_PROFILE_EXTRA_PROMPT_3,
-  ]
-    .map(value => (value || '').replace(/\\n/g, '\n').trim())
-    .filter(Boolean)
-    .join('\n\n');
-
-  if (!extra) return OWNER_PROFILE_PROMPT;
-
-  return `${OWNER_PROFILE_PROMPT}
-
----
-
-【本地私有补充资料】
-以下内容来自环境变量 OWNER_PROFILE_EXTRA_PROMPT，只作为“我主人”的补充事实资料使用。
-同样遵守主人事实边界：明确写过、高度相近，或能从已知资料自然推出的温和推理才可以回答；推理必须标明“按资料看/我猜/可能”，不能顺口扩写未记录事实。
-
-${extra}`;
-}
-
 // 将一个外部 AbortSignal 连接到本地 AbortController（统一中止点）
 function linkSignals(source: AbortSignal | undefined, target: AbortController) {
   if (!source) return () => {};
@@ -652,7 +629,7 @@ export async function POST(req: NextRequest) {
     );
     const reqIsTarot = isTarot === true;
     const inTarotMode = !tarotExit && (reqIsTarot || tarotTrigger || tarotContext);
-    const ownerProfilePrompt = readOwnerProfilePrompt();
+    const ownerProfilePrompt = OWNER_PROFILE_PROMPT;
 
     // -------------------------------------------------
     // ① 系统提示词（✅ 强化 JSON 格式要求）
