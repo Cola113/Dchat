@@ -555,35 +555,86 @@ export default function Home() {
 
   // JSON 兜底解析（最终收尾用）
   const parseJSONResponse = (content: string): { reply: string; options: string[] } => {
-    try {
-      const parsed = JSON.parse(content);
-      if (parsed.reply && Array.isArray(parsed.options) && parsed.options.length === 3) {
-        return { reply: parsed.reply, options: parsed.options };
+    const decodeJsonString = (raw: string) => {
+      try {
+        return JSON.parse(`"${raw}"`);
+      } catch {
+        return raw;
       }
-    } catch {
-      const replyMatch = content.match(/"reply"\s*:\s*"([^"]+)"/);
-      const optionsMatch = content.match(/"options"\s*:\s*\[([\s\S]*?)\]/);
-      if (replyMatch && optionsMatch) {
+    };
+
+    const normalizeParsedResponse = (value: unknown) => {
+      if (!value || typeof value !== 'object') return null;
+      const data = value as { reply?: unknown; options?: unknown };
+      const reply = typeof data.reply === 'string' ? data.reply.trim() : '';
+      const options = Array.isArray(data.options)
+        ? data.options
+            .filter((item): item is string => typeof item === 'string')
+            .map(item => item.trim())
+            .filter(Boolean)
+            .slice(0, 3)
+        : [];
+
+      if (!reply) return null;
+
+      return {
+        reply,
+        options: options.length === 3 ? options : [],
+      };
+    };
+
+    const trimmed = content
+      .trim()
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```$/i, '')
+      .trim();
+
+    const candidates = [trimmed];
+    const firstBrace = trimmed.indexOf('{');
+    const lastBrace = trimmed.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      candidates.push(trimmed.slice(firstBrace, lastBrace + 1));
+    }
+
+    for (const candidate of candidates) {
+      try {
+        const parsed = JSON.parse(candidate);
+        const normalized = normalizeParsedResponse(parsed);
+        if (normalized) return normalized;
+      } catch {}
+    }
+
+    const replyMatch = trimmed.match(/"reply"\s*:\s*"((?:\\.|[^"\\])*)"/);
+    const optionsMatch = trimmed.match(/"options"\s*:\s*\[([\s\S]*?)\]/);
+    if (replyMatch) {
+      const reply = decodeJsonString(replyMatch[1]).trim();
+      let options: string[] = [];
+
+      if (optionsMatch) {
         try {
-          const reply = replyMatch[1];
-          const optionsStr = optionsMatch[1];
-          const options = optionsStr
-            .split(',')
-            .map(opt => opt.trim().replace(/^"|"$/g, ''))
-            .filter(opt => opt.length > 0)
-            .slice(0, 3);
-          if (options.length === 3) return { reply, options };
+          const parsedOptions = JSON.parse(`[${optionsMatch[1]}]`);
+          if (Array.isArray(parsedOptions)) {
+            options = parsedOptions
+              .filter((item): item is string => typeof item === 'string')
+              .map(item => item.trim())
+              .filter(Boolean)
+              .slice(0, 3);
+          }
         } catch {}
       }
+
+      if (reply) {
+        return {
+          reply,
+          options: options.length === 3 ? options : [],
+        };
+      }
     }
-    console.warn('JSON 解析失败，使用兜底选项');
+
+    console.warn('JSON 解析失败，隐藏兜底选项');
     return {
-      reply: content,
-      options: [
-        '🤔 你继续说吧，我听着呢',
-        '🎨 换个话题聊聊',
-        '✨ 懒得打字，给我几个选择呗'
-      ]
+      reply: trimmed || '哎呀，这条回复有点轻飘飘的，我再认真接一次～✨',
+      options: []
     };
   };
 
@@ -646,6 +697,7 @@ export default function Home() {
         reader,
         // 仅显示 reply 文本（不显示 JSON）
         (displayReply) => {
+          if (!displayReply.trim()) return;
           setMessages(prev => prev.map(msg =>
             msg.id === initialMessageId
               ? { ...msg, content: displayReply }
@@ -662,7 +714,7 @@ export default function Home() {
           ));
           // 若流式已逐条推入，这里只做兜底合并
           setSuggestedOptions(prev => prev.length ? prev : options);
-          if (!optionMessageId) setOptionMessageId(initialMessageId);
+          if (options.length > 0 && !optionMessageId) setOptionMessageId(initialMessageId);
         },
         // 新增：options 逐条出现
         (opt) => {
@@ -937,6 +989,7 @@ export default function Home() {
         reader,
         // reply 渲染：仅文本
         (displayReply) => {
+          if (!displayReply.trim()) return;
           if (!hasStarted) hasStarted = true;
           upsertAiMessage(displayReply);
         },
@@ -968,7 +1021,7 @@ export default function Home() {
             });
 
             setSuggestedOptions(prev => prev.length ? prev : options);
-            setOptionMessageId(aiMessageId);
+            if (options.length > 0) setOptionMessageId(aiMessageId);
             void saveConversationLog({
               conversationId: getConversationId(),
               messageId: aiMessageId,
