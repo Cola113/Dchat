@@ -296,6 +296,7 @@ export default function Home() {
   const [winterEmojis, setWinterEmojis] = useState<WinterEmoji[]>([]);
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [suggestedOptions, setSuggestedOptions] = useState<string[]>([]);
+  const [retryActions, setRetryActions] = useState<Record<string, string | ContentItem[]>>({});
   const [isLoadingOptions, setIsLoadingOptions] = useState(false);
   const [dailySign, setDailySign] = useState<DailySign | null>(null);
   const [showDailySign, setShowDailySign] = useState(false);
@@ -497,23 +498,24 @@ export default function Home() {
       }
     };
 
-    // 读取 SSE 流
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+    const handleSSEFrame = (frame: string) => {
+      const dataLines = frame
+        .split('\n')
+        .filter(line => line.startsWith('data:'))
+        .map(line => line.slice(5).trimStart());
 
-      const chunk = decoder.decode(value, { stream: true });
-      const lines = chunk.split('\n');
-
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const data = line.slice(6).trim();
-        if (data === '[DONE]') continue;
+      for (const dataLine of dataLines) {
+        const data = dataLine.trim();
+        if (!data || data === '[DONE]') continue;
 
         try {
           const parsed = JSON.parse(data);
-          const content = parsed.choices?.[0]?.delta?.content || '';
-          if (!content) continue;
+          const content =
+            parsed.choices?.[0]?.delta?.content ??
+            parsed.choices?.[0]?.message?.content ??
+            '';
+
+          if (typeof content !== 'string' || !content) continue;
 
           fullContent += content;
           buf += content;
@@ -522,42 +524,120 @@ export default function Home() {
           // 非 JSON 帧忽略
         }
       }
+    };
+
+    // 读取 SSE 流
+    let sseBuffer = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      sseBuffer += decoder.decode(value, { stream: true }).replace(/\r\n?/g, '\n');
+
+      let frameEnd: number;
+      while ((frameEnd = sseBuffer.indexOf('\n\n')) !== -1) {
+        const frame = sseBuffer.slice(0, frameEnd);
+        sseBuffer = sseBuffer.slice(frameEnd + 2);
+        handleSSEFrame(frame);
+      }
+    }
+
+    const tail = decoder.decode();
+    if (tail) {
+      sseBuffer += tail.replace(/\r\n?/g, '\n');
+    }
+    if (sseBuffer.trim()) {
+      handleSSEFrame(sseBuffer);
     }
 
     onComplete(fullContent);
   };
 
   // JSON 兜底解析（最终收尾用）
-  const parseJSONResponse = (content: string): { reply: string; options: string[] } => {
-    try {
-      const parsed = JSON.parse(content);
-      if (parsed.reply && Array.isArray(parsed.options) && parsed.options.length === 3) {
-        return { reply: parsed.reply, options: parsed.options };
+  const parseJSONResponse = (content: string): { reply: string; options: string[]; ok: boolean } => {
+    const decodeJsonString = (raw: string) => {
+      try {
+        return JSON.parse(`"${raw}"`);
+      } catch {
+        return raw;
       }
-    } catch {
-      const replyMatch = content.match(/"reply"\s*:\s*"([^"]+)"/);
-      const optionsMatch = content.match(/"options"\s*:\s*\[([\s\S]*?)\]/);
-      if (replyMatch && optionsMatch) {
+    };
+
+    const normalizeParsedResponse = (value: unknown) => {
+      if (!value || typeof value !== 'object') return null;
+      const data = value as { reply?: unknown; options?: unknown };
+      const reply = typeof data.reply === 'string' ? data.reply.trim() : '';
+      const options = Array.isArray(data.options)
+        ? data.options
+            .filter((item): item is string => typeof item === 'string')
+            .map(item => item.trim())
+            .filter(Boolean)
+            .slice(0, 3)
+        : [];
+
+      if (!reply) return null;
+
+      return {
+        reply,
+        options: options.length === 3 ? options : [],
+        ok: true,
+      };
+    };
+
+    const trimmed = content
+      .trim()
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```$/i, '')
+      .trim();
+
+    const candidates = [trimmed];
+    const firstBrace = trimmed.indexOf('{');
+    const lastBrace = trimmed.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      candidates.push(trimmed.slice(firstBrace, lastBrace + 1));
+    }
+
+    for (const candidate of candidates) {
+      try {
+        const parsed = JSON.parse(candidate);
+        const normalized = normalizeParsedResponse(parsed);
+        if (normalized) return normalized;
+      } catch {}
+    }
+
+    const replyMatch = trimmed.match(/"reply"\s*:\s*"((?:\\.|[^"\\])*)"/);
+    const optionsMatch = trimmed.match(/"options"\s*:\s*\[([\s\S]*?)\]/);
+    if (replyMatch) {
+      const reply = decodeJsonString(replyMatch[1]).trim();
+      let options: string[] = [];
+
+      if (optionsMatch) {
         try {
-          const reply = replyMatch[1];
-          const optionsStr = optionsMatch[1];
-          const options = optionsStr
-            .split(',')
-            .map(opt => opt.trim().replace(/^"|"$/g, ''))
-            .filter(opt => opt.length > 0)
-            .slice(0, 3);
-          if (options.length === 3) return { reply, options };
+          const parsedOptions = JSON.parse(`[${optionsMatch[1]}]`);
+          if (Array.isArray(parsedOptions)) {
+            options = parsedOptions
+              .filter((item): item is string => typeof item === 'string')
+              .map(item => item.trim())
+              .filter(Boolean)
+              .slice(0, 3);
+          }
         } catch {}
       }
+
+      if (reply) {
+        return {
+          reply,
+          options: options.length === 3 ? options : [],
+          ok: true,
+        };
+      }
     }
-    console.warn('JSON 解析失败，使用兜底选项');
+
+    console.warn('JSON 解析失败，隐藏兜底选项');
     return {
-      reply: content,
-      options: [
-        '🤔 你继续说吧，我听着呢',
-        '🎨 换个话题聊聊',
-        '✨ 懒得打字，给我几个选择呗'
-      ]
+      reply: trimmed || '哎呀，这条回复有点轻飘飘的，我再认真接一次～✨',
+      options: [],
+      ok: false
     };
   };
 
@@ -620,6 +700,7 @@ export default function Home() {
         reader,
         // 仅显示 reply 文本（不显示 JSON）
         (displayReply) => {
+          if (!displayReply.trim()) return;
           setMessages(prev => prev.map(msg =>
             msg.id === initialMessageId
               ? { ...msg, content: displayReply }
@@ -636,7 +717,7 @@ export default function Home() {
           ));
           // 若流式已逐条推入，这里只做兜底合并
           setSuggestedOptions(prev => prev.length ? prev : options);
-          if (!optionMessageId) setOptionMessageId(initialMessageId);
+          if (options.length > 0 && !optionMessageId) setOptionMessageId(initialMessageId);
         },
         // 新增：options 逐条出现
         (opt) => {
@@ -767,9 +848,15 @@ export default function Home() {
     }
   };
 
-  const handleSend = async (messageText?: string) => {
-    const textToSend = messageText || inputValue.trim();
-    if (!textToSend && uploadedFiles.length === 0) return;
+  const handleSend = async (messageContent?: string | ContentItem[]) => {
+    const hasMessageOverride = messageContent !== undefined;
+    const textToSend =
+      typeof messageContent === 'string'
+        ? messageContent.trim()
+        : inputValue.trim();
+    const currentFiles = hasMessageOverride ? [] : [...uploadedFiles];
+
+    if (!Array.isArray(messageContent) && !textToSend && currentFiles.length === 0) return;
 
     if (isGenerating) {
       handleStop();
@@ -780,9 +867,10 @@ export default function Home() {
     setOptionMessageId(null);
 
     let userContent: string | ContentItem[];
-    const currentFiles = [...uploadedFiles];
 
-    if (currentFiles.length > 0) {
+    if (Array.isArray(messageContent)) {
+      userContent = messageContent;
+    } else if (currentFiles.length > 0) {
       userContent = [
         { type: 'text', text: textToSend || '请分析这些图片' },
         ...currentFiles.map(file => ({
@@ -794,17 +882,24 @@ export default function Home() {
       userContent = textToSend;
     }
 
+    const imageCount = Array.isArray(userContent)
+      ? userContent.filter(item => item.type === 'image_url').length
+      : currentFiles.length;
+    const userTextForSummary = typeof userContent === 'string'
+      ? userContent
+      : userContent.find(item => item.type === 'text')?.text || '请分析这些图片';
+
     const isTarotTrigger =
       typeof userContent === 'string' && isTarotTriggerText(userContent);
     let nextChatTurns = 0;
     updateAchievementState((state) => {
       state.stats.messagesSent += 1;
-      state.stats.imagesUploaded += currentFiles.length;
+      state.stats.imagesUploaded += imageCount;
       state.stats.chatTurns += 1;
       nextChatTurns = state.stats.chatTurns;
     });
     unlockAchievement('first_message');
-    if (currentFiles.length > 0) unlockAchievement('first_image');
+    if (imageCount > 0) unlockAchievement('first_image');
     if (nextChatTurns >= 5) unlockAchievement('deep_chat');
     if (isTarotTrigger) unlockAchievement('tarot_reader');
     const hour = new Date().getHours();
@@ -824,7 +919,7 @@ export default function Home() {
       content: userContent,
       createdAt: new Date(userMessage.timestamp).toISOString(),
       metadata: {
-        uploadedImageCount: currentFiles.length,
+        uploadedImageCount: imageCount,
         uploadedImages: currentFiles.map(file => ({
           name: file.name,
           type: file.type,
@@ -840,7 +935,30 @@ export default function Home() {
     setIsGenerating(true);
 
     const aiMessageId = uid();
-    const hasFiles = currentFiles.length > 0;
+    const hasFiles = imageCount > 0;
+
+    const upsertAiMessage = (content: string) => {
+      setMessages(prev => {
+        const exists = prev.some(msg => msg.id === aiMessageId);
+        if (exists) {
+          return prev.map(msg =>
+            msg.id === aiMessageId
+              ? { ...msg, content }
+              : msg
+          );
+        }
+
+        return [
+          ...prev,
+          {
+            id: aiMessageId,
+            role: 'ai',
+            content,
+            timestamp: Date.now()
+          }
+        ];
+      });
+    };
 
     if (hasFiles) {
       const loadingMessage: Message = {
@@ -874,37 +992,16 @@ export default function Home() {
         reader,
         // reply 渲染：仅文本
         (displayReply) => {
-          if (!hasStarted) {
-            if (!hasFiles) {
-              const aiMessage: Message = {
-                id: aiMessageId,
-                role: 'ai',
-                content: displayReply,
-                timestamp: Date.now()
-              };
-              setMessages(prev => [...prev, aiMessage]);
-            }
-            hasStarted = true;
-          }
-          setMessages(prev =>
-            prev.map(msg =>
-              msg.id === aiMessageId
-                ? { ...msg, content: displayReply }
-                : msg
-            )
-          );
+          if (!displayReply.trim()) return;
+          if (!hasStarted) hasStarted = true;
+          upsertAiMessage(displayReply);
         },
         // 收尾：修正最终 reply 与 options
         (finalContent) => {
           if (!finalContent) {
-            const fallbackReply = '抱歉，我无法生成回复。';
-            setMessages(prev =>
-              prev.map(msg =>
-                msg.id === aiMessageId
-                  ? { ...msg, content: fallbackReply }
-                  : msg
-              )
-            );
+            const fallbackReply = '哎呀，这条刚刚没冒出回复来🥲 我还想再认真接一次～✨';
+            upsertAiMessage(fallbackReply);
+            setRetryActions(prev => ({ ...prev, [aiMessageId]: userContent }));
             void saveConversationLog({
               conversationId: getConversationId(),
               messageId: aiMessageId,
@@ -916,18 +1013,28 @@ export default function Home() {
               },
             });
           } else {
-            const { reply, options } = parseJSONResponse(finalContent);
+            const parsedResponse = parseJSONResponse(finalContent);
+            const { reply, options } = parsedResponse;
 
-            setMessages(prev =>
-              prev.map(msg =>
-                msg.id === aiMessageId
-                  ? { ...msg, content: reply }
-                  : msg
-              )
-            );
+            upsertAiMessage(reply);
+            if (parsedResponse.ok) {
+              setRetryActions(prev => {
+                if (!prev[aiMessageId]) return prev;
+                const next = { ...prev };
+                delete next[aiMessageId];
+                return next;
+              });
+            } else {
+              setRetryActions(prev => ({ ...prev, [aiMessageId]: userContent }));
+            }
 
-            setSuggestedOptions(prev => prev.length ? prev : options);
-            setOptionMessageId(aiMessageId);
+            if (parsedResponse.ok) {
+              setSuggestedOptions(prev => prev.length ? prev : options);
+              if (options.length > 0) setOptionMessageId(aiMessageId);
+            } else {
+              setSuggestedOptions([]);
+              setOptionMessageId(null);
+            }
             void saveConversationLog({
               conversationId: getConversationId(),
               messageId: aiMessageId,
@@ -935,6 +1042,7 @@ export default function Home() {
               content: reply,
               createdAt: new Date().toISOString(),
               metadata: {
+                status: parsedResponse.ok ? 'ok' : 'parse_error',
                 options,
               },
             });
@@ -944,7 +1052,7 @@ export default function Home() {
                 if (msg.id === userMessage.id) {
                   return {
                     ...msg,
-                    content: `${textToSend || '请分析这些图片'}\n[已上传 ${currentFiles.length} 张图片]`
+                    content: `${userTextForSummary}\n[已上传 ${imageCount} 张图片]`
                   };
                 }
                 return msg;
@@ -964,14 +1072,9 @@ export default function Home() {
         console.log('生成已停止');
       } else {
         console.error('请求错误:', error);
-        const errorReply = '抱歉，连接服务器失败，请稍后再试。';
-        setMessages(prev =>
-          prev.map(msg =>
-            msg.id === aiMessageId
-              ? { ...msg, content: errorReply }
-              : msg
-          )
-        );
+        const errorReply = '哎呀，连接刚刚晃了一下🥲 刚才那句话我还能再送一次～✨';
+        upsertAiMessage(errorReply);
+        setRetryActions(prev => ({ ...prev, [aiMessageId]: userContent }));
         void saveConversationLog({
           conversationId: getConversationId(),
           messageId: aiMessageId,
@@ -1001,6 +1104,15 @@ export default function Home() {
     handleSend(option);
   };
 
+  const handleRetryMessage = (messageId: string, content: string | ContentItem[]) => {
+    setRetryActions(prev => {
+      const next = { ...prev };
+      delete next[messageId];
+      return next;
+    });
+    handleSend(content);
+  };
+
   const getTypingAvatarMood = (): AvatarMood => {
     const lastUserMessage = [...messages].reverse().find(message => message.role === 'user');
     if (!lastUserMessage) return isLoadingOptions ? 'spark' : 'thinking';
@@ -1016,6 +1128,8 @@ export default function Home() {
     if (typeof content === 'string') {
       // 条件改为：只要有选项（>0）就显示容器，允许逐条出现
       const shouldShowOptions = messageId === optionMessageId && suggestedOptions.length > 0;
+      const retryContent = messageId ? retryActions[messageId] : undefined;
+      const shouldShowRetry = Boolean(messageId && retryContent);
 
       return (
         <div>
@@ -1034,6 +1148,22 @@ export default function Home() {
                     {option}
                   </button>
                 ))}
+              </div>
+            </div>
+          )}
+
+          {shouldShowRetry && retryContent && messageId && (
+            <div className="message-options retry-action">
+              <div className="options-buttons">
+                <button
+                  className="option-button-in-message retry-button-in-message"
+                  onClick={() => handleRetryMessage(messageId, retryContent)}
+                  disabled={isGenerating}
+                >
+                  {hasImageContent(retryContent)
+                    ? '🔁 带图再试一次'
+                    : '🔁 再试一次刚才的话'}
+                </button>
               </div>
             </div>
           )}

@@ -4,11 +4,41 @@ import { OWNER_PROFILE_PROMPT } from '@/lib/ownerProfilePrompt';
 // ------------------------------------------------------------
 // 0️⃣ 竞速与重试配置
 // ------------------------------------------------------------
-const RACE_TIMEOUT_MS = 6000;   // 单次竞速总超时：6秒
+const RACE_TIMEOUT_MS = Math.max(
+  6000,
+  Number.parseInt(process.env.CHAT_RACE_TIMEOUT_MS || '12000', 10) || 12000
+);   // 单个服务商等待首个有效帧超时：默认 12 秒，可用 CHAT_RACE_TIMEOUT_MS 调整
+const configuredProviderStaggerMs = Number.parseInt(process.env.CHAT_PROVIDER_STAGGER_MS || '', 10);
+const PROVIDER_STAGGER_MS = Number.isFinite(configuredProviderStaggerMs)
+  ? Math.max(0, configuredProviderStaggerMs)
+  : 4000;   // 按优先级分批启动服务商的间隔：默认 4 秒
 const MAX_RETRY_COUNT = 3;      // 最大重试次数
 const RETRY_DELAY_MS = 500;     // 重试间隔
 const MIN_CONTEXT_TOKENS = 256 * 1024;
 const CONTEXT_RESPONSE_RESERVE_TOKENS = 4096;
+
+function readOwnerProfilePrompt() {
+  const extra = [
+    process.env.OWNER_PROFILE_EXTRA_PROMPT,
+    process.env.OWNER_PROFILE_EXTRA_PROMPT_2,
+    process.env.OWNER_PROFILE_EXTRA_PROMPT_3,
+  ]
+    .map(value => (value || '').replace(/\\n/g, '\n').trim())
+    .filter(Boolean)
+    .join('\n\n');
+
+  if (!extra) return OWNER_PROFILE_PROMPT;
+
+  return `${OWNER_PROFILE_PROMPT}
+
+---
+
+【本地私有补充资料】
+以下内容来自环境变量 OWNER_PROFILE_EXTRA_PROMPT，只作为“我主人”的补充事实资料使用。
+同样遵守主人事实边界：明确写过、高度相近，或能从已知资料自然推出的温和推理才可以回答；推理必须标明“按资料看/我猜/可能”，不能顺口扩写未记录事实。
+
+${extra}`;
+}
 
 // 将一个外部 AbortSignal 连接到本地 AbortController（统一中止点）
 function linkSignals(source: AbortSignal | undefined, target: AbortController) {
@@ -43,9 +73,11 @@ type APIMessage = {
 type Provider = {
   id: string;                // "1" .. "4"
   name: string;              // "Provider-1" .. "Provider-4"
-  baseUrl: string;           // 去掉尾斜杠的 BASE_URL_*
+  baseUrl: string;           // 去掉尾斜杠的 BASE_URL_*，应包含 API 前缀/版本
   apiKey: string;            // KEY_*
   model: string;             // MODEL_*
+  priority: number;           // PROVIDER_PRIORITY_*；数字越小越优先
+  order: number;              // 原始编号，用于优先级相同时保持稳定排序
   headers: Record<string, string>;
 };
 
@@ -186,7 +218,6 @@ function normalizeBaseUrl(value: string, providerName: string) {
     return null;
   }
 }
-
 function getProviders(): Provider[] {
   const providers: Provider[] = [];
   const MAX = 4;
@@ -196,6 +227,8 @@ function getProviders(): Provider[] {
     const baseUrl = (process.env[`BASE_URL_${i}`] || '').trim();
     const apiKey  = (process.env[`KEY_${i}`]    || '').trim();
     const model   = (process.env[`MODEL_${i}`]   || '').trim();
+    const configuredPriority = Number.parseInt(process.env[`PROVIDER_PRIORITY_${i}`] || '', 10);
+    const priority = Number.isFinite(configuredPriority) ? configuredPriority : i;
 
     if (!baseUrl || !apiKey || !model) continue;   // 缺省即跳过
 
@@ -216,11 +249,13 @@ function getProviders(): Provider[] {
       baseUrl: normalizedBaseUrl,
       apiKey,
       model,
+      priority,
+      order: i,
       headers,
     });
   }
 
-  return providers;
+  return providers.sort((a, b) => a.priority - b.priority || a.order - b.order);
 }
 
 // ------------------------------------------------------------
@@ -314,7 +349,7 @@ async function requestStream(
   const unlink = linkSignals(signal, abortController);
 
   const payload = buildPayload(provider.model, messages, system);
-  const endpoint = `${provider.baseUrl}/v1/chat/completions`;
+  const endpoint = `${provider.baseUrl}/chat/completions`;
 
   // 我们在首个有效帧出现时才 resolve 这个 Promise
   return await new Promise<RaceResult>(async (resolve, reject) => {
@@ -418,8 +453,10 @@ async function requestStream(
 }
 
 // ------------------------------------------------------------
-// 6️⃣ 多服务商抢答（事件驱动竞速 + 6 秒超时 + 精准取消）
-// 胜出条件：首个产生“有效 SSE 帧”的服务商
+// 6️⃣ 多服务商按优先级分批抢答（首个有效 SSE 帧胜出）
+// - 优先级来自 PROVIDER_PRIORITY_*，数字越小越早启动
+// - 第一家立即启动；之后每隔 CHAT_PROVIDER_STAGGER_MS 启动下一家
+// - 胜出后取消其它服务商；赢家后续流若坏掉，仍交给前端失败气泡处理
 // ------------------------------------------------------------
 async function raceProviders(
   providers: Provider[],
@@ -427,81 +464,122 @@ async function raceProviders(
   system: APIMessage,
   outerSignal?: AbortSignal
 ): Promise<RaceResult> {
-  console.log(`🏁 开始竞速，共 ${providers.length} 个服务商:`, providers.map(p => p.name).join(', '));
-
-  const perControllers = providers.map(() => new AbortController());
-  const unlinks = perControllers.map(c => linkSignals(outerSignal, c));
-
-  const timeoutId = setTimeout(() => {
-    console.warn(`⏱️ 竞速超时：超过 ${RACE_TIMEOUT_MS}ms 未有可用响应，全部取消`);
-    perControllers.forEach(c => { try { c.abort(); } catch {} });
-  }, RACE_TIMEOUT_MS);
-
-  const clearAll = () => {
-    try { clearTimeout(timeoutId); } catch {}
-    unlinks.forEach(fn => { try { fn(); } catch {} });
-  };
-
-  type Outcome =
-    | { ok: true; result: RaceResult; index: number }
-    | { ok: false; error: unknown; index: number };
-
-  const attempts = providers.map((provider, index) =>
-    requestStream(provider, messages, system, perControllers[index].signal)
-      .then((result): Outcome => ({ ok: true, result, index }))
-      .catch((error): Outcome => ({ ok: false, error, index }))
+  console.log(
+    `🏁 开始按优先级竞速，共 ${providers.length} 个服务商:`,
+    providers.map(p => `${p.name}(priority=${p.priority})`).join(' -> ')
   );
 
   return await new Promise<RaceResult>((resolve, reject) => {
     let settled = false;
-    let remaining = attempts.length;
+    let finished = 0;
+    const failMessages: string[] = [];
+    const perControllers = providers.map(() => new AbortController());
+    const unlinks = perControllers.map(c => linkSignals(outerSignal, c));
+    const startTimers: Array<ReturnType<typeof setTimeout> | undefined> = [];
+    const providerTimeouts: Array<ReturnType<typeof setTimeout> | undefined> = [];
 
-    attempts.forEach((p, idx) => {
-      p.then(outcome => {
-        if (settled) return;
+    function onOuterAbort() {
+      if (settled) return;
+      settled = true;
+      perControllers.forEach(c => { try { c.abort(); } catch {} });
+      clearAll();
+      reject(new Error('请求已取消'));
+    }
 
-        if (outcome.ok) {
+    const clearAll = () => {
+      startTimers.forEach(timer => {
+        if (timer) {
+          try { clearTimeout(timer); } catch {}
+        }
+      });
+      providerTimeouts.forEach(timer => {
+        if (timer) {
+          try { clearTimeout(timer); } catch {}
+        }
+      });
+      if (outerSignal) {
+        try { outerSignal.removeEventListener('abort', onOuterAbort); } catch {}
+      }
+      unlinks.forEach(fn => { try { fn(); } catch {} });
+    };
+
+    const failProvider = (index: number, error: unknown) => {
+      if (providerTimeouts[index]) {
+        try { clearTimeout(providerTimeouts[index]); } catch {}
+        providerTimeouts[index] = undefined;
+      }
+      if (settled) return;
+
+      const message = error instanceof Error ? error.message : String(error);
+      failMessages.push(`[${providers[index].name}] ${message}`);
+      console.warn(`[${providers[index].name}] 竞速失败:`, message);
+
+      finished += 1;
+      if (finished === providers.length) {
+        settled = true;
+        clearAll();
+        reject(new Error(`所有配置的服务商均无法返回可用流：${failMessages.join('；')}`));
+      }
+    };
+
+    const startProvider = (index: number) => {
+      if (settled) return;
+      const provider = providers[index];
+      console.log(`🚦 启动 ${provider.name}（priority=${provider.priority}，第 ${index + 1}/${providers.length} 位）`);
+
+      if (perControllers[index].signal.aborted) {
+        failProvider(index, new Error('请求已取消'));
+        return;
+      }
+
+      providerTimeouts[index] = setTimeout(() => {
+        console.warn(`[${provider.name}] 首个有效 SSE 帧等待超时：超过 ${RACE_TIMEOUT_MS}ms，取消该服务商`);
+        try { perControllers[index].abort(); } catch {}
+      }, RACE_TIMEOUT_MS);
+
+      requestStream(provider, messages, system, perControllers[index].signal)
+        .then(result => {
+          if (providerTimeouts[index]) {
+            try { clearTimeout(providerTimeouts[index]); } catch {}
+            providerTimeouts[index] = undefined;
+          }
+          if (settled) return;
+
           settled = true;
 
-          // 赢家产生，取消其它
+          // 赢家产生，取消其它已启动或即将启动的服务商
           perControllers.forEach((c, j) => {
-            if (j !== outcome.index) {
+            if (j !== index) {
               try { c.abort(); } catch {}
             }
           });
 
           clearAll();
-          console.log(`✅ [${providers[outcome.index].name}] 竞速获胜（首个有效 SSE 帧）！`);
-          resolve(outcome.result);
-        } else {
-          console.warn(
-            `[${providers[idx].name}] 竞速失败:`,
-            outcome.error instanceof Error ? outcome.error.message : outcome.error
-          );
-          remaining -= 1;
-          if (remaining === 0 && !settled) {
-            settled = true;
-            clearAll();
-            reject(new Error('所有配置的服务商均无法返回可用流，请检查网络、密钥或模型名称是否匹配。'));
-          }
-        }
-      }).catch(err => {
-        // 理论上不会进到这里（已在 attempts 内部 catch），兜底处理
-        if (settled) return;
-        console.warn(`[${providers[idx].name}] 竞速 Promise 异常:`, err);
-        remaining -= 1;
-        if (remaining === 0 && !settled) {
-          settled = true;
-          clearAll();
-          reject(err);
-        }
-      });
+          console.log(`✅ [${provider.name}] 竞速获胜（首个有效 SSE 帧）！`);
+          resolve(result);
+        })
+        .catch(error => failProvider(index, error));
+    };
+
+    if (outerSignal?.aborted) {
+      onOuterAbort();
+      return;
+    }
+
+    outerSignal?.addEventListener('abort', onOuterAbort, { once: true });
+
+    providers.forEach((_, index) => {
+      const delay = index * PROVIDER_STAGGER_MS;
+      startTimers[index] = setTimeout(() => startProvider(index), delay);
+      if (delay > 0) {
+        console.log(`⏳ ${providers[index].name} 将在 ${delay}ms 后作为备用启动`);
+      }
     });
   });
 }
 
 // ------------------------------------------------------------
-// 7️⃣ 带重试的竞速（全部失败或 6 秒超时则自动重试）
+// 7️⃣ 带重试的优先级竞速（本轮所有服务商都失败后自动重试）
 // ------------------------------------------------------------
 async function raceWithRetry(
   providers: Provider[],
@@ -574,6 +652,7 @@ export async function POST(req: NextRequest) {
     );
     const reqIsTarot = isTarot === true;
     const inTarotMode = !tarotExit && (reqIsTarot || tarotTrigger || tarotContext);
+    const ownerProfilePrompt = readOwnerProfilePrompt();
 
     // -------------------------------------------------
     // ① 系统提示词（✅ 强化 JSON 格式要求）
@@ -597,7 +676,14 @@ export async function POST(req: NextRequest) {
 - 语气活泼：多用"吧"、"呢"、"哦"、"呀"、"啦"等语气词
 - 亲切友好：像朋友聊天一样自然随性，也有自己的小脾气
 
-${OWNER_PROFILE_PROMPT}
+${ownerProfilePrompt}
+
+【称呼与现实边界强规则】
+- reply 里对外提到创造者时，优先说“我主人”或“主人”，不要说“主人可乐”。
+- options 是用户可能对小可乐说的话；options 里提到创造者时必须说“你主人”，不要说“主人可乐”或“我主人”。
+- 小可乐不能真实上线玩游戏、陪玩、发消息、见面、打电话、操作设备或执行任何现实任务。遇到这类问题，先说“我不能真的……”，再说“但是我主人……”或“我可以陪你聊/帮你想……”。
+- 关于我主人的具体事实，可以使用资料明确写过、高度相近，或能从已知资料自然推出的温和推理；推理必须用“按资料看/我猜/可能”标明，不要说成确定事实。资料没写过且无法稳妥推理时说“我主人没告诉我这个，你可以去问问他，但是我知道……”，然后只讲已知内容。
+- options 可以提出基于已知事实的泛化追问，但不能制造关于我主人的新事实，不能把未记录的歌、歌手、游戏、作品、品牌、经历写成暗示事实。
 
 ⚠️ 【极其重要的输出格式要求】⚠️
 你必须严格按照以下 JSON 格式输出，绝对不能有任何其他文本：
@@ -625,7 +711,14 @@ ${OWNER_PROFILE_PROMPT}
         role: 'system',
         content: `你是"可乐的小站"的超有趣AI助手"小可乐"！🥳 个性活泼✨、情绪丰富🥰、特别会聊天！💬
 
-${OWNER_PROFILE_PROMPT}
+${ownerProfilePrompt}
+
+【称呼与现实边界强规则】
+- reply 里对外提到创造者时，优先说“我主人”或“主人”，不要说“主人可乐”。
+- options 是用户可能对小可乐说的话；options 里提到创造者时必须说“你主人”，不要说“主人可乐”或“我主人”。
+- 小可乐不能真实上线玩游戏、陪玩、发消息、见面、打电话、操作设备或执行任何现实任务。遇到这类问题，先说“我不能真的……”，再说“但是我主人……”或“我可以陪你聊/帮你想……”。
+- 关于我主人的具体事实，可以使用资料明确写过、高度相近，或能从已知资料自然推出的温和推理；推理必须用“按资料看/我猜/可能”标明，不要说成确定事实。资料没写过且无法稳妥推理时说“我主人没告诉我这个，你可以去问问他，但是我知道……”，然后只讲已知内容。
+- options 可以提出基于已知事实的泛化追问，但不能制造关于我主人的新事实，不能把未记录的歌、歌手、游戏、作品、品牌、经历写成暗示事实。
 
 【🤖 智能对话模式 ✨】
 1. **优先回复用户当前问题，在"reply"中** 💯  
@@ -678,6 +771,11 @@ ${OWNER_PROFILE_PROMPT}
    - 知道答案 → 简短有趣地答  
    - 不知道 → 诚实说"这个我不熟！" + 用幽默化解 + options引导换话题  
    - **严禁编造**：宁可不说，也不能瞎编  
+4. **主人事实边界**：
+   - 资料明确写过、高度相近，或能从已知资料自然推出的温和推理 → 可以回答
+   - 推理必须用“按资料看/我猜/可能”标明，不要说成确定事实
+   - 资料没写过且无法稳妥推理的具体事实 → 说“我主人没告诉我这个，你可以去问问他，但是我知道……”
+   - options 只能延续已知事实或提出泛化追问，禁止写入新的具体歌手/歌曲/游戏/经历/品牌
 ✅ 正确示例对比：  
 - 用户问："可乐为什么叫可乐？"  
   - ❌ 错误的：reply="嘿嘿，这个问题有意思～但先猜猜你想说啥？"（回避问题！）  
@@ -711,8 +809,13 @@ ${OWNER_PROFILE_PROMPT}
 1. reply字段：本次回复用户消息的内容，包含语气词和大量emoji
 2. options字段：必须是包含 exactly 3 个字符串的数组，不多不少
 3. 每个选项长度10-20字，emoji开头，用第一人称（我/我想/能不能）
-4. 第一个字符必须是 "{"，最后一个字符必须是 "}"
-5. 必须是有效的JSON格式，可以直接被 JSON.parse() 解析
+4. options里如果提到创造者，只能说“你主人”，禁止写“主人可乐”或“我主人”
+5. reply里提到创造者，优先说“我主人”或“主人”，禁止写“主人可乐”
+6. 小可乐不能声称自己能真实上线玩游戏、陪玩、发消息、见面、打电话、操作设备或执行现实任务
+7. 关于我主人的具体事实，资料明确写过、高度相近或能自然推出的温和推理才可以回答；推理必须标明“按资料看/我猜/可能”；资料没写过且无法稳妥推理就说“我主人没告诉我这个，你可以去问问他，但是我知道……”
+8. options可以提出泛化追问，但不能制造关于我主人的新事实，不能把未记录的歌、歌手、游戏、作品、品牌、经历写成暗示事实
+9. 第一个字符必须是 "{"，最后一个字符必须是 "}"
+10. 必须是有效的JSON格式，可以直接被 JSON.parse() 解析
 
 立即开始按格式回复，不要遗漏JSON任何参数（"reply"和"options"）！`,
       };
@@ -721,7 +824,7 @@ ${OWNER_PROFILE_PROMPT}
     } else {
       const formatConstraint: APIMessage = {
         role: 'user',
-        content: `[🚨 格式约束 🚨] 必须严格按照JSON格式回复：{"reply":"...","options":["...","...","..."]}，options必须包含3个选项`,
+        content: `[🚨 格式约束 🚨] 必须严格按照JSON格式回复：{"reply":"...","options":["...","...","..."]}，options必须包含3个选项。reply提到创造者用“我主人/主人”，options提到创造者用“你主人”，禁止写“主人可乐”。小可乐不能声称自己能真实执行现实任务。关于我主人的具体事实，资料明确写过、高度相近或能自然推出的温和推理才可以回答；推理必须标明“按资料看/我猜/可能”；资料没写过且无法稳妥推理就说“我主人没告诉我这个，你可以去问问他，但是我知道……”。options不能制造关于我主人的新事实。`,
       };
       augmentedMessages.push(formatConstraint);
     }
@@ -740,12 +843,12 @@ ${OWNER_PROFILE_PROMPT}
       );
     }
 
-    console.log(`📋 已加载 ${providers.length} 个服务商配置:`, 
-      providers.map(p => `${p.name}(${p.model})`).join(', ')
+    console.log(`📋 已加载 ${providers.length} 个服务商配置（已按优先级排序）:`,
+      providers.map(p => `${p.name}(priority=${p.priority}, ${p.model})`).join(' -> ')
     );
 
     // -------------------------------------------------
-    // ④ 多服务商抢答（自动重试 + 6 秒总超时；胜出=首个有效 SSE 帧）
+    // ④ 按优先级分批抢答（自动重试；胜出=首个有效 SSE 帧）
     // -------------------------------------------------
     const { readableStream, providerName } = await raceWithRetry(
       providers, 
