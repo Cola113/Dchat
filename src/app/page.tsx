@@ -287,7 +287,7 @@ export default function Home() {
     {
       id: initialMessageId,
       role: 'ai',
-      content: '你好!我是可乐的AI助手~ 🎄',
+      content: '柒柒你好呀，我是小可乐~ 🎄',
       timestamp: Date.now()
     }
   ]);
@@ -1230,12 +1230,12 @@ export default function Home() {
       <div className="chat-container">
         <div className="header">
           <div style={{ display: 'inline-block' }}>
-            <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-red-600 via-green-600 to-red-600 shimmer" style={{ letterSpacing: '-0.02em' }}>
+            <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-red-600 via-green-600 to-red-600 shimmer" style={{ letterSpacing: 0 }}>
               可乐的小站
             </h1>
           </div>
           <p className="mt-1 text-red-700/90 text-sm glow">
-            <span className="emoji-bounce">🎄</span>顶<span className="emoji-bounce">🎅</span>级<span className="emoji-bounce">⛄</span>牛<span className="emoji-bounce">🎁</span>马<span className="emoji-bounce">🔔</span>
+            <span className="emoji-bounce">🎄</span>一🎮格✨存💾档<span className="emoji-bounce">🔔</span>
           </p>
         </div>
 
