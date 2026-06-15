@@ -288,7 +288,7 @@ export default function Home() {
     {
       id: initialMessageId,
       role: 'ai',
-      content: '柒柒你来啦，小可乐正在摆三扇小门~ 🎄',
+      content: '柒柒你好呀，我是小可乐~ 🎄',
       timestamp: Date.now()
     }
   ]);
@@ -676,7 +676,7 @@ export default function Home() {
     try {
       setMessages(prev => prev.map(msg =>
         msg.id === initialMessageId
-          ? { ...msg, content: '✨ 正在摆三扇跨度很大的小门...' }
+          ? { ...msg, content: '✨ 正在准备超级有趣的话题...' }
           : msg
       ));
 
@@ -730,7 +730,7 @@ export default function Home() {
       console.error('获取初始选项失败:', error);
       setMessages(prev => prev.map(msg =>
         msg.id === initialMessageId
-          ? { ...msg, content: '哎呀呀，三扇小门刚刚卡了一下 😢 但小可乐还能先开个手动存档！' }
+          ? { ...msg, content: '抱歉，欢迎语加载失败了 😢 但你可以随便聊聊哦！' }
           : msg
       ));
       setSuggestedOptions(buildWelcomeDoorOptions());
