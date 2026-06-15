@@ -7,6 +7,7 @@ import AchievementToast, { type AchievementToastItem } from './components/Achiev
 import DailySignModal from './components/DailySignModal';
 import EmojiAvatar, { type AvatarMood } from './components/EmojiAvatar';
 import { pickDailySign, type DailySign } from './data/dailySigns';
+import { buildWelcomeDoorOptions } from '@/lib/welcomeDoors';
 import 'katex/dist/katex.min.css';
 
 type Message = {
@@ -287,7 +288,7 @@ export default function Home() {
     {
       id: initialMessageId,
       role: 'ai',
-      content: '柒柒你好呀，我是小可乐~ 🎄',
+      content: '柒柒你来啦，小可乐正在摆三扇小门~ 🎄',
       timestamp: Date.now()
     }
   ]);
@@ -675,7 +676,7 @@ export default function Home() {
     try {
       setMessages(prev => prev.map(msg =>
         msg.id === initialMessageId
-          ? { ...msg, content: '✨ 正在准备超级有趣的话题...' }
+          ? { ...msg, content: '✨ 正在摆三扇跨度很大的小门...' }
           : msg
       ));
 
@@ -685,7 +686,7 @@ export default function Home() {
         body: JSON.stringify({
           messages: [{
             role: 'user',
-            content: '初次访问，请生成3个跨度极大的话题选项'
+            content: '初次访问，请随机生成3个跨度极大的创意入口：现实、虚拟、推荐、心情、电影、故事、冒险等类别混合，不要固定方向。'
           }],
           isFirstLoad: true
         }),
@@ -729,10 +730,10 @@ export default function Home() {
       console.error('获取初始选项失败:', error);
       setMessages(prev => prev.map(msg =>
         msg.id === initialMessageId
-          ? { ...msg, content: '抱歉，欢迎语加载失败了 😢 但你可以随便聊聊哦！' }
+          ? { ...msg, content: '哎呀呀，三扇小门刚刚卡了一下 😢 但小可乐还能先开个手动存档！' }
           : msg
       ));
-      setSuggestedOptions(['😄 讲个冷笑话', '🎄 分享圣诞故事', '🥘 推荐美食食谱']);
+      setSuggestedOptions(buildWelcomeDoorOptions());
       setOptionMessageId(initialMessageId);
     } finally {
       setIsLoadingOptions(false);
