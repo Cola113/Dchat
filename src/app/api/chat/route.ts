@@ -38,7 +38,7 @@ function linkSignals(source: AbortSignal | undefined, target: AbortController) {
 // 1️⃣ 类型定义（已加入 'system' 角色）
 // ------------------------------------------------------------
 type ContentPart =
-  | { type: 'text'; text?: string }
+  | { type: 'text'; text?: string; cache_control?: { type: 'ephemeral' } }
   | { type: 'image_url'; image_url?: { url: string } };
 
 type APIMessage = {
@@ -254,13 +254,31 @@ function getProviders(): Provider[] {
 // 3️⃣ 统一请求体（OpenAI‑ChatCompletions 兼容字段）
 // 说明：上下文窗口由模型决定；应用侧用 CHAT_CONTEXT_TOKENS 控制保留预算。
 // ------------------------------------------------------------
-function buildPayload(model: string, messages: APIMessage[], system: APIMessage) {
+function shouldUseContextCache(model: string) {
+  return process.env.CHAT_CONTEXT_CACHE === '1' && /^qwen3\.7-plus(?:-|$)/i.test(model);
+}
+
+function withContextCache(system: APIMessage, model: string, cacheSystem: boolean): APIMessage {
+  if (!cacheSystem || !shouldUseContextCache(model) || typeof system.content !== 'string') return system;
+
+  return {
+    ...system,
+    content: [
+      {
+        type: 'text',
+        text: system.content,
+        cache_control: { type: 'ephemeral' },
+      },
+    ],
+  };
+}
+
+function buildPayload(model: string, messages: APIMessage[], system: APIMessage, cacheSystem: boolean) {
   return {
     model,
-    messages: [system, ...messages],
+    messages: [withContextCache(system, model, cacheSystem), ...messages],
     temperature: 0.7,
     stream: true,                               // 打开 SSE 流
-    thinking: { type: "disabled" },
     response_format: { type: "json_object" },   // ✅ 保持不变
   };
 }
@@ -335,12 +353,13 @@ async function requestStream(
   provider: Provider,
   messages: APIMessage[],
   system: APIMessage,
+  cacheSystem: boolean,
   signal?: AbortSignal
 ): Promise<RaceResult> {
   const abortController = new AbortController();
   const unlink = linkSignals(signal, abortController);
 
-  const payload = buildPayload(provider.model, messages, system);
+  const payload = buildPayload(provider.model, messages, system, cacheSystem);
   const endpoint = `${provider.baseUrl}/chat/completions`;
 
   // 我们在首个有效帧出现时才 resolve 这个 Promise
@@ -454,6 +473,7 @@ async function raceProviders(
   providers: Provider[],
   messages: APIMessage[],
   system: APIMessage,
+  cacheSystem: boolean,
   outerSignal?: AbortSignal
 ): Promise<RaceResult> {
   console.log(
@@ -529,7 +549,7 @@ async function raceProviders(
         try { perControllers[index].abort(); } catch {}
       }, RACE_TIMEOUT_MS);
 
-      requestStream(provider, messages, system, perControllers[index].signal)
+      requestStream(provider, messages, system, cacheSystem, perControllers[index].signal)
         .then(result => {
           if (providerTimeouts[index]) {
             try { clearTimeout(providerTimeouts[index]); } catch {}
@@ -577,6 +597,7 @@ async function raceWithRetry(
   providers: Provider[],
   messages: APIMessage[],
   system: APIMessage,
+  cacheSystem: boolean,
   outerSignal?: AbortSignal
 ): Promise<RaceResult> {
   let lastErr: unknown;
@@ -584,7 +605,7 @@ async function raceWithRetry(
   for (let attempt = 1; attempt <= MAX_RETRY_COUNT; attempt++) {
     try {
       console.log(`🔄 竞速尝试 ${attempt}/${MAX_RETRY_COUNT} 开始`);
-      const res = await raceProviders(providers, messages, system, outerSignal);
+      const res = await raceProviders(providers, messages, system, cacheSystem, outerSignal);
       console.log(`✅ 竞速尝试 ${attempt} 成功`);
       return res;
     } catch (err) {
@@ -646,6 +667,7 @@ export async function POST(req: NextRequest) {
     const inTarotMode = !tarotExit && (reqIsTarot || tarotTrigger || tarotContext);
     const ownerProfilePrompt = OWNER_PROFILE_PROMPT;
     const welcomeDoorOptions = buildWelcomeDoorOptions();
+    const isWelcomeMode = isFirstLoad || (messages.length === 1 && messages[0].role === 'user');
 
     // -------------------------------------------------
     // ① 系统提示词（✅ 强化 JSON 格式要求）
@@ -654,7 +676,7 @@ export async function POST(req: NextRequest) {
 
     if (inTarotMode) {
       systemMessage = getTarotSystemMessage();
-    } else if (isFirstLoad || (messages.length === 1 && messages[0].role === 'user')) {
+    } else if (isWelcomeMode) {
       systemMessage = {
         role: 'system',
         content: `你是可乐创造的超有趣AI助手"小可乐"！个性活泼、情绪丰富、特别会聊天！
@@ -929,7 +951,8 @@ ${ownerProfilePrompt}
     const { readableStream, providerName } = await raceWithRetry(
       providers, 
       contextMessages,
-      systemMessage, 
+      systemMessage,
+      !isWelcomeMode,
       req.signal
     );
 

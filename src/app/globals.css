@@ -216,12 +216,45 @@ body {
 /* 头部 */
 .header {
   flex-shrink: 0;
+  position: relative;
   padding: 4px  20px;
   text-align: center;
   background: rgba(255, 255, 255, 0.25);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   border-bottom: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+.new-conversation-button {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid rgba(220, 38, 38, 0.28);
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.52);
+  color: #991b1b;
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 6px 16px rgba(220, 38, 38, 0.12);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  transition: transform 0.2s ease, background 0.2s ease, border-color 0.2s ease;
+}
+
+.new-conversation-button:hover {
+  transform: translateY(-1px);
+  border-color: rgba(22, 163, 74, 0.4);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.new-conversation-button:active {
+  transform: translateY(0);
 }
 
 /* 聊天消息区域 */
@@ -908,16 +941,18 @@ body {
   z-index: 60;
   display: grid;
   place-items: center;
-  padding: 24px;
+  padding: 18px;
   background: rgba(15, 23, 42, 0.34);
   backdrop-filter: blur(10px) saturate(1.08);
   -webkit-backdrop-filter: blur(10px) saturate(1.08);
   animation: modalFadeIn 0.25s ease-out;
+  overflow-y: auto;
 }
 
 .daily-sign-card {
   width: min(94vw, 470px);
-  min-height: min(740px, calc(100dvh - 36px));
+  min-height: 0;
+  max-height: calc(100dvh - 36px);
   border-radius: 36px;
   overflow: visible;
   background-size: cover;
@@ -1246,6 +1281,114 @@ body {
   margin-top: 112px;
 }
 
+@media (max-height: 760px) {
+  .daily-sign-card {
+    width: min(92vw, 430px);
+    max-height: calc(100dvh - 28px);
+    padding: 28px 24px 64px;
+  }
+
+  .daily-sign-charm {
+    width: min(58vw, 200px);
+    min-height: 420px;
+    padding: 14px;
+  }
+
+  .daily-sign-paper {
+    min-height: 392px;
+    padding: 22px 18px;
+  }
+
+  .daily-sign-paper h2 {
+    max-height: 220px;
+    font-size: clamp(2.1rem, 8dvh, 3.4rem);
+  }
+
+  .daily-sign-text {
+    margin-top: 16px;
+    font-size: 0.82rem;
+    line-height: 1.58;
+  }
+
+  .daily-sign-english {
+    font-size: 0.72rem;
+  }
+
+  .daily-sign-tassel {
+    bottom: -78px;
+    height: 70px;
+  }
+
+  .daily-sign-fan {
+    bottom: 118px;
+    transform: scale(0.86) rotate(-8deg);
+  }
+
+  .daily-sign-cloud {
+    top: 154px;
+    transform: scale(0.9);
+    transform-origin: 100% 50%;
+  }
+
+  .daily-sign-ornament-left {
+    top: 58px;
+  }
+
+  .daily-sign-ornament-right {
+    bottom: 166px;
+  }
+
+  .daily-sign-actions {
+    margin-top: 84px;
+  }
+}
+
+@media (max-height: 660px) {
+  .daily-sign-backdrop {
+    padding: 12px;
+  }
+
+  .daily-sign-card {
+    max-height: calc(100dvh - 20px);
+    padding: 24px 20px 52px;
+  }
+
+  .daily-sign-charm {
+    width: min(56vw, 184px);
+    min-height: 372px;
+  }
+
+  .daily-sign-paper {
+    min-height: 344px;
+    padding: 18px 16px;
+  }
+
+  .daily-sign-kicker {
+    margin-bottom: 10px;
+    font-size: 0.62rem;
+  }
+
+  .daily-sign-paper h2 {
+    max-height: 184px;
+    font-size: clamp(1.9rem, 8dvh, 3rem);
+  }
+
+  .daily-sign-text {
+    margin-top: 12px;
+    font-size: 0.78rem;
+    line-height: 1.48;
+  }
+
+  .daily-sign-english {
+    margin-top: 6px;
+    font-size: 0.68rem;
+  }
+
+  .daily-sign-actions {
+    margin-top: 68px;
+  }
+}
+
 .daily-sign-button {
   position: relative;
   border: 1px solid rgba(255, 255, 255, 0.7);
@@ -1285,6 +1428,13 @@ body {
   opacity: 0.46;
   box-shadow: none;
   filter: grayscale(0.4);
+}
+
+@media (max-height: 660px) {
+  .daily-sign-button {
+    padding: 9px 16px;
+    font-size: 0.88rem;
+  }
 }
 
 .achievement-stack {
@@ -1374,8 +1524,57 @@ body {
 }
 
 /* 超窄屏自适应：压缩按钮内边距，留更多空间给输入框 */
+@media (max-width: 640px), (pointer: coarse) {
+  .snowflakes .snowflake {
+    animation-duration: 14s;
+  }
+
+  .shimmer {
+    animation-duration: 12s, 22s;
+  }
+
+  .glow {
+    animation-duration: 3.5s;
+  }
+
+  .emoji-bounce {
+    animation-duration: 3.4s;
+  }
+
+  .emoji-avatar {
+    animation-duration: 5.5s;
+  }
+
+  .emoji-avatar-active {
+    animation-duration: 2.6s, 1.4s;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .snowflakes .snowflake {
+    animation-duration: 20s;
+  }
+
+  .shimmer,
+  .glow,
+  .emoji-bounce,
+  .emoji-avatar {
+    animation: none;
+  }
+
+  .typing span {
+    animation-duration: 2.4s;
+  }
+}
+
 @media (max-width: 380px) {
   .input-area { gap: 4px; }
   .send-button { padding: 8px 12px; font-size: 0.9rem; }
   .upload-button { padding: 8px 10px; }
+  .new-conversation-button {
+    top: 6px;
+    right: 8px;
+    padding: 6px 8px;
+    font-size: 0.72rem;
+  }
 }

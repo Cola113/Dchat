@@ -33,8 +33,19 @@ type ContentItem = {
 };
 
 type APIMessage = {
-  role: 'user' | 'assistant';
+  role: 'system' | 'user' | 'assistant';
   content: string | ContentItem[];
+};
+
+type ConversationSummary = {
+  summary: string;
+  userFacts: string[];
+  activeThreads: string[];
+  decisions: string[];
+  assistantState: string[];
+  safetyBoundaries: string[];
+  updatedAt: number;
+  summarizedThroughMessageId: string;
 };
 
 type ConversationLogRole = 'user' | 'assistant';
@@ -74,9 +85,17 @@ const AiMarkdown = dynamic(() => import('./components/AiMarkdown'), {
 });
 
 type SnowflakeItem = { symbol: string; opacity: string };
-const SNOWFLAKE_COUNT = 100;
+const DESKTOP_SNOWFLAKE_COUNT = 100;
+const MOBILE_SNOWFLAKE_COUNT = 32;
+const COMPACT_SNOWFLAKE_COUNT = 24;
+const REDUCED_MOTION_SNOWFLAKE_COUNT = 12;
+const STREAM_RENDER_INTERVAL_MS = 80;
 const SNOWFLAKE_SYMBOLS = ['❄', '❅', '❆', '✻', '✼', '❉', '✺', '✹', '✸', '✷', '✶', '✵', '✴', '✳', '✲', '✱', '*', '·', '•'];
 const CONVERSATION_ID_STORAGE_KEY = 'dchat.conversationId';
+const LOCAL_CONVERSATION_STORAGE_KEY = 'dchat.localConversation.v1';
+const LOCAL_CONVERSATION_MESSAGE_LIMIT = 100;
+const LOCAL_CONVERSATION_SUMMARY_TRIGGER = 100;
+const LOCAL_CONVERSATION_SUMMARY_KEEP = 60;
 const VISITOR_ID_STORAGE_KEY = 'dchat.visitorId';
 const DAILY_SIGN_SEEN_KEY = 'dchat.dailySignSeenDate';
 const DAILY_SIGN_REROLLED_KEY = 'dchat.dailySignRerolledDate';
@@ -132,6 +151,12 @@ const getLocalDateKey = () => {
 
 const createConversationId = () => `conv_${uid()}`;
 const createVisitorId = () => `visitor_${uid()}`;
+const createInitialMessage = (id = uid()): Message => ({
+  id,
+  role: 'ai',
+  content: '柒柒你好呀，我是小可乐~ 🎄',
+  timestamp: Date.now()
+});
 
 const getOrCreateConversationId = () => {
   if (typeof window === 'undefined') return createConversationId();
@@ -190,6 +215,167 @@ const writeAchievementState = (state: LocalAchievementState) => {
   localStorage.setItem(ACHIEVEMENT_STORAGE_KEY, JSON.stringify(state));
 };
 
+const normalizeLocalContent = (content: unknown): Message['content'] | null => {
+  if (typeof content === 'string') return content;
+
+  if (!Array.isArray(content)) return null;
+
+  const items = content
+    .map((item): ContentItem | null => {
+      if (!item || typeof item !== 'object') return null;
+      const raw = item as { type?: unknown; text?: unknown; image_url?: unknown };
+      const type = typeof raw.type === 'string' ? raw.type : '';
+
+      if (type === 'text') {
+        return {
+          type: 'text',
+          text: typeof raw.text === 'string' ? raw.text : '',
+        };
+      }
+
+      if (type === 'image_url') {
+        const imageUrl =
+          raw.image_url &&
+          typeof raw.image_url === 'object' &&
+          'url' in raw.image_url &&
+          typeof raw.image_url.url === 'string'
+            ? raw.image_url.url
+            : '';
+
+        return {
+          type: 'image_url',
+          image_url: { url: imageUrl },
+        };
+      }
+
+      return { type };
+    })
+    .filter((item): item is ContentItem => item !== null);
+
+  return items;
+};
+
+const normalizeLocalMessage = (message: unknown): Message | null => {
+  if (!message || typeof message !== 'object') return null;
+
+  const raw = message as {
+    id?: unknown;
+    role?: unknown;
+    content?: unknown;
+    timestamp?: unknown;
+  };
+  if (raw.role !== 'user' && raw.role !== 'ai') return null;
+
+  const content = normalizeLocalContent(raw.content);
+  if (content === null) return null;
+
+  return {
+    id: typeof raw.id === 'string' && raw.id ? raw.id : uid(),
+    role: raw.role,
+    content,
+    timestamp: typeof raw.timestamp === 'number' ? raw.timestamp : Date.now(),
+  };
+};
+
+const normalizeStringList = (value: unknown) =>
+  Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    : [];
+
+const normalizeConversationSummary = (summary: unknown): ConversationSummary | null => {
+  if (!summary || typeof summary !== 'object') return null;
+
+  const raw = summary as {
+    summary?: unknown;
+    userFacts?: unknown;
+    activeThreads?: unknown;
+    decisions?: unknown;
+    assistantState?: unknown;
+    safetyBoundaries?: unknown;
+    updatedAt?: unknown;
+    summarizedThroughMessageId?: unknown;
+  };
+  const summaryText = typeof raw.summary === 'string' ? raw.summary.trim() : '';
+  const summarizedThroughMessageId =
+    typeof raw.summarizedThroughMessageId === 'string' ? raw.summarizedThroughMessageId : '';
+
+  if (!summaryText || !summarizedThroughMessageId) return null;
+
+  return {
+    summary: summaryText,
+    userFacts: normalizeStringList(raw.userFacts),
+    activeThreads: normalizeStringList(raw.activeThreads),
+    decisions: normalizeStringList(raw.decisions),
+    assistantState: normalizeStringList(raw.assistantState),
+    safetyBoundaries: normalizeStringList(raw.safetyBoundaries),
+    updatedAt: typeof raw.updatedAt === 'number' ? raw.updatedAt : Date.now(),
+    summarizedThroughMessageId,
+  };
+};
+
+const readLocalConversationSnapshot = () => {
+  if (typeof window === 'undefined') return null;
+
+  try {
+    const parsed = JSON.parse(localStorage.getItem(LOCAL_CONVERSATION_STORAGE_KEY) || '');
+    if (!parsed || typeof parsed !== 'object') return null;
+
+    const raw = parsed as {
+      conversationId?: unknown;
+      messages?: unknown;
+      suggestedOptions?: unknown;
+      optionMessageId?: unknown;
+      summary?: unknown;
+    };
+    const messages = Array.isArray(raw.messages)
+      ? raw.messages
+          .map(normalizeLocalMessage)
+          .filter((message): message is Message => message !== null)
+          .slice(-LOCAL_CONVERSATION_MESSAGE_LIMIT)
+      : [];
+
+    if (messages.length === 0) return null;
+
+    return {
+      conversationId: typeof raw.conversationId === 'string' ? raw.conversationId : '',
+      messages,
+      suggestedOptions: Array.isArray(raw.suggestedOptions)
+        ? raw.suggestedOptions.filter((option): option is string => typeof option === 'string').slice(0, 3)
+        : [],
+      optionMessageId:
+        typeof raw.optionMessageId === 'string' || raw.optionMessageId === null
+          ? raw.optionMessageId
+          : null,
+      summary: normalizeConversationSummary(raw.summary),
+    };
+  } catch {
+    return null;
+  }
+};
+
+const writeLocalConversationSnapshot = (snapshot: {
+  conversationId: string;
+  messages: Message[];
+  suggestedOptions: string[];
+  optionMessageId: string | null;
+  summary: ConversationSummary | null;
+}) => {
+  if (typeof window === 'undefined') return;
+
+  localStorage.setItem(
+    LOCAL_CONVERSATION_STORAGE_KEY,
+    JSON.stringify({
+      version: 1,
+      conversationId: snapshot.conversationId,
+      messages: snapshot.messages.slice(-LOCAL_CONVERSATION_MESSAGE_LIMIT),
+      suggestedOptions: snapshot.suggestedOptions.slice(0, 3),
+      optionMessageId: snapshot.optionMessageId,
+      summary: snapshot.summary,
+      updatedAt: Date.now(),
+    })
+  );
+};
+
 const prepareContentForLog = (content: string | ContentItem[]) => {
   if (typeof content === 'string') return content;
 
@@ -232,6 +418,18 @@ const textFromContent = (content: string | ContentItem[]) => {
 const hasImageContent = (content: string | ContentItem[]) =>
   Array.isArray(content) && content.some(item => item.type === 'image_url');
 
+const formatListForSummaryPrompt = (title: string, items: string[]) => {
+  if (items.length === 0) return '';
+  return `\n${title}\n${items.map(item => `- ${item}`).join('\n')}`;
+};
+
+const formatConversationSummaryForPrompt = (summary: ConversationSummary) => {
+  return `【历史对话摘要】
+以下是此前对话的内部摘要，只用于保持连续性。不要在回复里提到“摘要”“记录”“系统信息”等来源。
+
+${summary.summary}${formatListForSummaryPrompt('【用户事实与偏好】', summary.userFacts)}${formatListForSummaryPrompt('【仍在进行的话题】', summary.activeThreads)}${formatListForSummaryPrompt('【已确定事项】', summary.decisions)}${formatListForSummaryPrompt('【助手状态】', summary.assistantState)}${formatListForSummaryPrompt('【表达边界】', summary.safetyBoundaries)}`.trim();
+};
+
 const inferAiMood = (content: string | ContentItem[], seed: string): AvatarMood => {
   if (hasImageContent(content)) return 'image';
 
@@ -248,13 +446,76 @@ const inferAiMood = (content: string | ContentItem[], seed: string): AvatarMood 
   return moods[seed.length % moods.length];
 };
 
+const getSnowflakeCount = () => {
+  if (typeof window === 'undefined') return DESKTOP_SNOWFLAKE_COUNT;
+
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    return REDUCED_MOTION_SNOWFLAKE_COUNT;
+  }
+
+  const compactHeight = window.matchMedia('(max-height: 700px)').matches;
+  const mobileLike = window.matchMedia('(max-width: 640px), (pointer: coarse)').matches;
+
+  if (mobileLike) return compactHeight ? COMPACT_SNOWFLAKE_COUNT : MOBILE_SNOWFLAKE_COUNT;
+
+  return DESKTOP_SNOWFLAKE_COUNT;
+};
+
 function Snowflakes() {
   const [snowflakes, setSnowflakes] = useState<SnowflakeItem[]>([]);
   useEffect(() => {
-    setSnowflakes(Array.from({ length: SNOWFLAKE_COUNT }).map((_, i) => ({
-      symbol: SNOWFLAKE_SYMBOLS[i % SNOWFLAKE_SYMBOLS.length],
-      opacity: (0.2 + Math.random() * 0.7).toFixed(2),
-    })));
+    let frameId = 0;
+
+    const buildSnowflakes = () => {
+      if (document.hidden) {
+        setSnowflakes([]);
+        return;
+      }
+
+      const count = getSnowflakeCount();
+      setSnowflakes(Array.from({ length: count }).map((_, i) => ({
+        symbol: SNOWFLAKE_SYMBOLS[i % SNOWFLAKE_SYMBOLS.length],
+        opacity: (0.2 + Math.random() * 0.7).toFixed(2),
+      })));
+    };
+
+    const scheduleBuild = () => {
+      window.cancelAnimationFrame(frameId);
+      frameId = window.requestAnimationFrame(buildSnowflakes);
+    };
+
+    const mediaQueries = [
+      window.matchMedia('(prefers-reduced-motion: reduce)'),
+      window.matchMedia('(max-width: 640px)'),
+      window.matchMedia('(max-height: 700px)'),
+      window.matchMedia('(pointer: coarse)'),
+    ];
+    const addMediaListener = (query: MediaQueryList) => {
+      if (typeof query.addEventListener === 'function') {
+        query.addEventListener('change', scheduleBuild);
+        return;
+      }
+      query.addListener(scheduleBuild);
+    };
+    const removeMediaListener = (query: MediaQueryList) => {
+      if (typeof query.removeEventListener === 'function') {
+        query.removeEventListener('change', scheduleBuild);
+        return;
+      }
+      query.removeListener(scheduleBuild);
+    };
+
+    buildSnowflakes();
+    window.addEventListener('resize', scheduleBuild);
+    document.addEventListener('visibilitychange', scheduleBuild);
+    mediaQueries.forEach(addMediaListener);
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      window.removeEventListener('resize', scheduleBuild);
+      document.removeEventListener('visibilitychange', scheduleBuild);
+      mediaQueries.forEach(removeMediaListener);
+    };
   }, []);
 
   if (snowflakes.length === 0) return null;
@@ -283,15 +544,13 @@ export default function Home() {
   const initialMessageId = useRef(uid()).current;
   const conversationIdRef = useRef('');
   const visitorIdRef = useRef('');
+  const localConversationReadyRef = useRef(false);
+  const localConversationRestoredRef = useRef(false);
+  const conversationSummaryRef = useRef<ConversationSummary | null>(null);
+  const compressionInFlightRef = useRef(false);
   const [optionMessageId, setOptionMessageId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: initialMessageId,
-      role: 'ai',
-      content: '柒柒你好呀，我是小可乐~ 🎄',
-      timestamp: Date.now()
-    }
-  ]);
+  const [messages, setMessages] = useState<Message[]>([createInitialMessage(initialMessageId)]);
+  const [conversationSummary, setConversationSummary] = useState<ConversationSummary | null>(null);
   const [inputValue, setInputValue] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [winterEmojis, setWinterEmojis] = useState<WinterEmoji[]>([]);
@@ -341,8 +600,26 @@ export default function Home() {
   };
 
   useEffect(() => {
-    conversationIdRef.current = getOrCreateConversationId();
+    const savedConversation = readLocalConversationSnapshot();
+    if (savedConversation?.conversationId) {
+      conversationIdRef.current = savedConversation.conversationId;
+      sessionStorage.setItem(CONVERSATION_ID_STORAGE_KEY, savedConversation.conversationId);
+    } else {
+      conversationIdRef.current = getOrCreateConversationId();
+    }
+
     visitorIdRef.current = getOrCreateVisitorId();
+
+    if (savedConversation) {
+      localConversationRestoredRef.current = true;
+      conversationSummaryRef.current = savedConversation.summary;
+      setMessages(savedConversation.messages);
+      setSuggestedOptions(savedConversation.suggestedOptions);
+      setOptionMessageId(savedConversation.optionMessageId);
+      setConversationSummary(savedConversation.summary);
+    }
+
+    localConversationReadyRef.current = true;
 
     const today = getLocalDateKey();
     const rerolledToday = localStorage.getItem(DAILY_SIGN_REROLLED_KEY) === today;
@@ -407,6 +684,46 @@ export default function Home() {
     const decoder = new TextDecoder();
     let fullContent = ''; // 模型在 JSON 中写入的完整文本（含 reply 与 options）
     let buf = '';         // 扫描缓冲区
+    let pendingReplyContent = '';
+    let lastReplyFlushAt = 0;
+    let replyFlushTimer: number | undefined;
+
+    const flushReplyContent = () => {
+      if (!pendingReplyContent) return;
+      const content = pendingReplyContent;
+      pendingReplyContent = '';
+      lastReplyFlushAt = Date.now();
+      onReplyChunk(content);
+    };
+
+    const emitReplyChunk = (displayContent: string) => {
+      pendingReplyContent = displayContent;
+      const waitMs = Math.max(0, STREAM_RENDER_INTERVAL_MS - (Date.now() - lastReplyFlushAt));
+
+      if (waitMs === 0) {
+        if (replyFlushTimer !== undefined) {
+          window.clearTimeout(replyFlushTimer);
+          replyFlushTimer = undefined;
+        }
+        flushReplyContent();
+        return;
+      }
+
+      if (replyFlushTimer === undefined) {
+        replyFlushTimer = window.setTimeout(() => {
+          replyFlushTimer = undefined;
+          flushReplyContent();
+        }, waitMs);
+      }
+    };
+
+    const flushPendingReplyContent = () => {
+      if (replyFlushTimer !== undefined) {
+        window.clearTimeout(replyFlushTimer);
+        replyFlushTimer = undefined;
+      }
+      flushReplyContent();
+    };
 
     // 找未转义的引号
     const findUnescapedQuote = (s: string, from: number) => {
@@ -467,7 +784,7 @@ export default function Home() {
         replyEnd = end; // -1 表示尚未闭合
         const upto = end === -1 ? buf.length : end;
         const raw = buf.slice(replyStart, upto);
-        onReplyChunk(decodeJsonStringPartial(raw));
+        emitReplyChunk(decodeJsonStringPartial(raw));
       }
 
       // 3) 找 options 开始（在 reply 完成之后）
@@ -551,6 +868,7 @@ export default function Home() {
       handleSSEFrame(sseBuffer);
     }
 
+    flushPendingReplyContent();
     onComplete(fullContent);
   };
 
@@ -646,7 +964,15 @@ export default function Home() {
     allMessages: Message[],
     newUserContent: string | ContentItem[]
   ): APIMessage[] => {
-    const apiMessages: APIMessage[] = allMessages.map((msg) => {
+    const summary = conversationSummaryRef.current;
+    const apiMessages: APIMessage[] = summary
+      ? [{
+          role: 'system',
+          content: formatConversationSummaryForPrompt(summary),
+        }]
+      : [];
+
+    apiMessages.push(...allMessages.map((msg): APIMessage => {
       if (msg.role === 'user' && Array.isArray(msg.content)) {
         const textPart = msg.content.find(item => item.type === 'text');
         const imageCount = msg.content.filter(item => item.type === 'image_url').length;
@@ -661,7 +987,7 @@ export default function Home() {
         role: msg.role === 'ai' ? 'assistant' : 'user',
         content: msg.content
       };
-    });
+    }));
 
     apiMessages.push({
       role: 'user',
@@ -671,11 +997,11 @@ export default function Home() {
     return apiMessages;
   };
 
-  const fetchInitialOptions = async () => {
+  const fetchInitialOptions = async (welcomeMessageId: string) => {
     setIsLoadingOptions(true);
     try {
       setMessages(prev => prev.map(msg =>
-        msg.id === initialMessageId
+        msg.id === welcomeMessageId
           ? { ...msg, content: '✨ 正在准备超级有趣的话题...' }
           : msg
       ));
@@ -703,7 +1029,7 @@ export default function Home() {
         (displayReply) => {
           if (!displayReply.trim()) return;
           setMessages(prev => prev.map(msg =>
-            msg.id === initialMessageId
+            msg.id === welcomeMessageId
               ? { ...msg, content: displayReply }
               : msg
           ));
@@ -712,39 +1038,147 @@ export default function Home() {
         (finalContent) => {
           const { reply, options } = parseJSONResponse(finalContent);
           setMessages(prev => prev.map(msg =>
-            msg.id === initialMessageId
+            msg.id === welcomeMessageId
               ? { ...msg, content: reply }
               : msg
           ));
           // 若流式已逐条推入，这里只做兜底合并
           setSuggestedOptions(prev => prev.length ? prev : options);
-          if (options.length > 0 && !optionMessageId) setOptionMessageId(initialMessageId);
+          if (options.length > 0 && !optionMessageId) setOptionMessageId(welcomeMessageId);
         },
         // 新增：options 逐条出现
         (opt) => {
-          setOptionMessageId(initialMessageId);
+          setOptionMessageId(welcomeMessageId);
           setSuggestedOptions(prev => (prev.includes(opt) ? prev : [...prev, opt]));
         }
       );
     } catch (error) {
       console.error('获取初始选项失败:', error);
       setMessages(prev => prev.map(msg =>
-        msg.id === initialMessageId
+        msg.id === welcomeMessageId
           ? { ...msg, content: '抱歉，欢迎语加载失败了 😢 但你可以随便聊聊哦！' }
           : msg
       ));
       setSuggestedOptions(buildWelcomeDoorOptions());
-      setOptionMessageId(initialMessageId);
+      setOptionMessageId(welcomeMessageId);
     } finally {
       setIsLoadingOptions(false);
     }
   };
 
   useEffect(() => {
-    const timer = setTimeout(() => { fetchInitialOptions(); }, 1000);
+    if (localConversationRestoredRef.current) return;
+    const timer = setTimeout(() => { fetchInitialOptions(initialMessageId); }, 1000);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    conversationSummaryRef.current = conversationSummary;
+  }, [conversationSummary]);
+
+  useEffect(() => {
+    if (!localConversationReadyRef.current) return;
+    if (messages.length <= 1 && suggestedOptions.length === 0) return;
+
+    const timer = window.setTimeout(() => {
+      writeLocalConversationSnapshot({
+        conversationId: getConversationId(),
+        messages,
+        suggestedOptions,
+        optionMessageId,
+        summary: conversationSummary,
+      });
+    }, 350);
+
+    return () => window.clearTimeout(timer);
+  }, [messages, suggestedOptions, optionMessageId, conversationSummary]);
+
+  useEffect(() => {
+    if (!localConversationReadyRef.current || isGenerating || isLoadingOptions) return;
+    if (messages.length <= LOCAL_CONVERSATION_SUMMARY_TRIGGER) return;
+    if (compressionInFlightRef.current) return;
+
+    const messagesToSummarize = messages.slice(0, Math.max(0, messages.length - LOCAL_CONVERSATION_SUMMARY_KEEP));
+    const messagesToKeep = messages.slice(-LOCAL_CONVERSATION_SUMMARY_KEEP);
+    const summarizedThroughMessageId = messagesToSummarize.at(-1)?.id;
+    if (!summarizedThroughMessageId || messagesToSummarize.length === 0) return;
+
+    compressionInFlightRef.current = true;
+    void (async () => {
+      try {
+        const response = await fetch('/api/conversations/summarize', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            previousSummary: conversationSummaryRef.current,
+            messages: messagesToSummarize.map(message => ({
+              id: message.id,
+              role: message.role === 'ai' ? 'assistant' : 'user',
+              content: prepareContentForLog(message.content),
+              createdAt: new Date(message.timestamp).toISOString(),
+            })),
+          }),
+        });
+
+        if (!response.ok) throw new Error(`摘要请求失败: ${response.status}`);
+        const result = await response.json();
+        const nextSummary = normalizeConversationSummary({
+          ...result,
+          updatedAt: Date.now(),
+          summarizedThroughMessageId,
+        });
+
+        if (!nextSummary) throw new Error('摘要结果格式无效');
+
+        conversationSummaryRef.current = nextSummary;
+        setConversationSummary(nextSummary);
+        setMessages(messagesToKeep);
+        setOptionMessageId(prev =>
+          prev && messagesToKeep.some(message => message.id === prev) ? prev : null
+        );
+        setRetryActions(prev => {
+          const keptIds = new Set(messagesToKeep.map(message => message.id));
+          return Object.fromEntries(Object.entries(prev).filter(([id]) => keptIds.has(id)));
+        });
+      } catch (error) {
+        console.warn('压缩本地上下文失败:', error);
+      } finally {
+        compressionInFlightRef.current = false;
+      }
+    })();
+  }, [messages, isGenerating, isLoadingOptions]);
+
+  const handleNewConversation = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+
+    const nextConversationId = createConversationId();
+    const nextWelcomeMessageId = uid();
+    conversationIdRef.current = nextConversationId;
+    sessionStorage.setItem(CONVERSATION_ID_STORAGE_KEY, nextConversationId);
+    localStorage.removeItem(LOCAL_CONVERSATION_STORAGE_KEY);
+    localConversationRestoredRef.current = false;
+    localConversationReadyRef.current = true;
+    conversationSummaryRef.current = null;
+    compressionInFlightRef.current = false;
+
+    setMessages([createInitialMessage(nextWelcomeMessageId)]);
+    setConversationSummary(null);
+    setInputValue('');
+    setUploadedFiles([]);
+    setSuggestedOptions([]);
+    setOptionMessageId(null);
+    setRetryActions({});
+    setIsGenerating(false);
+    setIsLoadingOptions(false);
+
+    window.setTimeout(() => {
+      void fetchInitialOptions(nextWelcomeMessageId);
+    }, 150);
+  };
 
   const scrollToBottom = () => {
     if (chatMessagesRef.current) {
@@ -1230,6 +1664,16 @@ export default function Home() {
 
       <div className="chat-container">
         <div className="header">
+          <button
+            type="button"
+            className="new-conversation-button"
+            onClick={handleNewConversation}
+            title="新对话"
+            aria-label="新对话"
+          >
+            <span aria-hidden="true">＋</span>
+            <span>新对话</span>
+          </button>
           <div style={{ display: 'inline-block' }}>
             <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-red-600 via-green-600 to-red-600 shimmer" style={{ letterSpacing: 0 }}>
               可乐的小站
